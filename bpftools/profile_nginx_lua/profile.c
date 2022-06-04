@@ -20,12 +20,15 @@
 #include "profile.h"
 #include "profile.skel.h"
 #include "trace_helpers.h"
+#include "uprobe_helpers.h"
 
 /* This structure combines key_t and count which should be sorted together */
 struct key_ext_t {
 	struct key_t k;
 	__u64 v;
 };
+
+bool exiting = false;
 
 static struct env {
 	pid_t pid;
@@ -75,6 +78,8 @@ const char argp_program_doc[] =
 
 #define OPT_PERF_MAX_STACK_DEPTH	1 /* --perf-max-stack-depth */
 #define OPT_STACK_STORAGE_SIZE		2 /* --stack-storage-size */
+#define PERF_BUFFER_PAGES	16
+#define PERF_POLL_TIMEOUT_MS	100
 
 static const struct argp_option opts[] = {
 	{ "pid", 'p', "PID", 0, "profile process with this PID only" },
@@ -238,6 +243,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static void sig_handler(int sig)
 {
+	exiting = true;
 }
 
 static int stack_id_err(int stack_id)
@@ -489,6 +495,45 @@ cleanup:
 	free(uip);
 }
 
+
+static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
+{
+	const struct nginx_event *e = data;
+	struct tm *tm;
+	char ts[16];
+	time_t t;
+
+	time(&t);
+	tm = localtime(&t);
+	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+	printf("%-8s %-7d %-10.3f\n",
+	       ts, e->pid, (double)e->time/1000000);
+}
+
+static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
+{
+	warn("lost %llu events on CPU #%d\n", lost_cnt, cpu);
+}
+
+static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
+{
+	int err;
+	char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
+
+	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_cache_load_code");
+	if (func_off < 0) {
+		warn("could not find getaddrinfo in %s\n", nginx_path);
+		return -1;
+	}
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
+					      -1, nginx_path, func_off);
+	if (!links[0]) {
+		warn("failed to attach getaddrinfo: %d\n", -errno);
+		return -1;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	static const struct argp argp = {
@@ -560,11 +605,24 @@ int main(int argc, char **argv)
 		fprintf(stderr, "failed to create syms_cache\n");
 		goto cleanup;
 	}
-	err = profile_bpf__attach(obj);
-	if (err) {
-		fprintf(stderr, "failed to attach BPF programs\n");
+
+	err = attach_uprobes(obj, links);
+	if (err)
+		goto cleanup;
+
+	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.events_nginx), PERF_BUFFER_PAGES,
+			      handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
+	if (!pb) {
+		err = -errno;
+		warn("failed to open perf buffer: %d\n", err);
 		goto cleanup;
 	}
+
+	// err = profile_bpf__attach(obj);
+	// if (err) {
+	// 	fprintf(stderr, "failed to attach BPF programs\n");
+	// 	goto cleanup;
+	// }
 
 	err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, links);
 	if (err)
@@ -600,7 +658,16 @@ int main(int argc, char **argv)
 	 * We'll get sleep interrupted when someone presses Ctrl-C (which will
 	 * be "handled" with noop by sig_handler).
 	 */
-	sleep(env.duration);
+	//sleep(env.duration);
+	while (!exiting) {
+		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
+		if (err < 0 && err != -EINTR) {
+			warn("error polling perf buffer: %s\n", strerror(-err));
+			goto cleanup;
+		}
+		/* reset err to return 0 if exiting */
+		err = 0;
+	}
 
 	print_map(ksyms, syms_cache, obj);
 

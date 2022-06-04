@@ -5,6 +5,7 @@
 #define TASK_COMM_LEN		16
 #define MAX_CPU_NR		128
 #define MAX_ENTRIES		10240
+#define HOST_LEN 80
 
 struct key_t {
 	__u32 pid;
@@ -12,6 +13,13 @@ struct key_t {
 	int user_stack_id;
 	int kern_stack_id;
 	char name[TASK_COMM_LEN];
+};
+
+struct nginx_event
+{
+	__u64 time;
+	__u32 pid;
+	void *L;
 };
 
 #endif /* __PROFILE_H */
