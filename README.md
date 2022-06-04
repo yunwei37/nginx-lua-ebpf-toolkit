@@ -1,6 +1,25 @@
+# Apache APISIX profile 工具
+
+## 项目产出要求：
+
+使用eBPF捕获和解析 `Apache APISIX` 中的 lua 调用堆栈信息，对其进行汇总并生成cpu火焰图：
+- 利用eBPF同时捕获和解析C和Lua混合调用堆栈信息，对其进行总结，生成cpu火焰图。
+- 支持获取在Docker中运行的 `Apache APISIX` 进程
+- 支持获取 Apache APISIX Openresty luajit 32/luajit 64 模式
+
+## 项目完成进度
 
 
- sudo /usr/bin/python /home/yunwei/coding/ebpf/nginx_uprobe.py
+- [X] 获取 docker 中运行的 APISIX 和 Openresty / nginx 进程 PID `2022/05`
+- [X] 利用 ebpf/BCC 生成火焰图 `2022/05`
+- [X] 利用 libbpf 生成 Openresty/nginx/lua 火焰图 `2022/06/04`
+- [X] 在 libbpf 中利用 uprobe 获取 lua status 堆栈信息 `2022/06/04`
+- [ ] 在 profile 的同时修复 lua status stack trace 信息
+- [ ] 整理工具
+
+## run nginx prob
+
+sudo /usr/bin/python /home/yunwei/coding/ebpf/nginx_uprobe.py
 
 ## openresty
 
