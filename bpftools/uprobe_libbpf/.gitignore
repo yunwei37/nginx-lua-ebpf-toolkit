@@ -7,3 +7,5 @@ a.cbt
 perf.data*
 trace_helpers.o
 uprobe_helpers.o
+nginx
+

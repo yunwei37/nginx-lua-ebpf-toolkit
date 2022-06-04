@@ -44,7 +44,7 @@ static void sig_int(int signo)
 	exiting = 1;
 }
 
-static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
+static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
 	const struct event *e = data;
 	struct tm *tm;
@@ -58,7 +58,7 @@ static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	       ts, e->pid, e->comm, (double)e->time/1000000, e->host);
 }
 
-static void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
+static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 {
 	warn("lost %llu events on CPU #%d\n", lost_cnt, cpu);
 }
@@ -67,26 +67,18 @@ static int attach_uprobes(struct nginx_bpf *obj, struct bpf_link *links[])
 {
 	int err;
 	char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
-	off_t func_off;
 
-	func_off = get_elf_func_offset(nginx_path, "ngx_http_create_request");
+	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_cache_load_code");
 	if (func_off < 0) {
 		warn("could not find getaddrinfo in %s\n", nginx_path);
 		return -1;
 	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry, false,
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
 					      target_pid ?: -1, nginx_path, func_off);
 	if (!links[0]) {
 		warn("failed to attach getaddrinfo: %d\n", -errno);
 		return -1;
 	}
-	links[1] = bpf_program__attach_uprobe(obj->progs.handle_return, true,
-					      target_pid ?: -1, nginx_path, func_off);
-	if (!links[1]) {
-		warn("failed to attach getaddrinfo: %d\n", -errno);
-		return -1;
-	}
-
 	return 0;
 }
 
@@ -125,8 +117,8 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
-	pb = perf_buffer__new(bpf_map__fd(obj->maps.events), PERF_BUFFER_PAGES,
-			      handle_event, handle_lost_events, NULL, NULL);
+	pb = perf_buffer__new(bpf_map__fd(obj->maps.events_nginx), PERF_BUFFER_PAGES,
+			      handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
 	if (!pb) {
 		err = -errno;
 		warn("failed to open perf buffer: %d\n", err);
@@ -154,7 +146,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	perf_buffer__free(pb);
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 2; i++)
 		bpf_link__destroy(links[i]);
 	nginx_bpf__destroy(obj);
 	cleanup_core_btf(&open_opts);
