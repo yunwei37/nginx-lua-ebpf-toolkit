@@ -322,12 +322,6 @@ typedef struct SBuf {
 #define setgcrefr(r, v) ((r).gcptr32 = (v).gcptr32)
 #endif
 
-#if LJ_GC64
-#define gcval(o) ((GCobj *)(gcrefu((o)->gcr) & LJ_GCVMASK))
-#else
-#define gcval(o) (gcref((o)->gcr))
-#endif
-
 #define tvref(r) (mref(r, TValue))
 
 /* -- String object ------------------------------------------------------- */
@@ -345,7 +339,7 @@ typedef struct GCstr {
   MSize len;		/* Size of string. */
 } GCstr;
 
-#define strref(r)	(&gcref((r))->str)
+//#define strref(r)	(&gcref((r))->str)
 #define strdata(s)	((const char *)((s)+1))
 #define strdatawr(s)	((char *)((s)+1))
 /* -- Userdata object ----------------------------------------------------- */
@@ -452,7 +446,8 @@ typedef struct GCproto {
 #define proto_bcpos(pt, pc)	((BCPos)((pc) - proto_bc(pt)))
 #define proto_uv(pt)		(mref((pt)->uv, uint16_t))
 
-#define proto_chunkname(pt)	(strref((pt)->chunkname))
+//#define proto_chunkname(pt)	(strref((pt)->chunkname))
+
 #define proto_chunknamestr(pt)	(strdata(proto_chunkname((pt))))
 #define proto_lineinfo(pt)	(mref((pt)->lineinfo, const void))
 #define proto_uvinfo(pt)	(mref((pt)->uvinfo, const uint8_t))
@@ -573,6 +568,18 @@ typedef union GCobj {
 /* Macro to convert any collectable object into a GCobj pointer. */
 #define obj2gco(v)	((GCobj *)(v))
 
+#if LJ_GC64
+//#define gcval(o) ((GCobj *)(gcrefu((o)->gcr) & LJ_GCVMASK))
+
+static __always_inline GCobj * gcval(cTValue *frame) {
+	GCRef gcr;
+	bpf_probe_read_user(&gcr, sizeof(gcr), &frame->gcr);
+	return (GCobj*)(gcr.gcptr64 & LJ_GCVMASK);
+}
+
+#else
+#define gcval(o) (gcref((o)->gcr))
+#endif
 
 /* -- Lua stack frame ----------------------------------------------------- */
 
@@ -616,7 +623,14 @@ enum
 **                  ^-- frame            | ^-- base   ^-- top
 */
 #define frame_gc(f) (gcval((f)-1))
-#define frame_ftsz(f) ((ptrdiff_t)(f)->ftsz)
+//#define frame_ftsz(f) ((ptrdiff_t)(f)->ftsz)
+
+static __always_inline bool frame_ftsz(cTValue *frame) {
+	ptrdiff_t ftsz;
+	bpf_probe_read_user(&ftsz, sizeof(ftsz), &frame->ftsz);
+	return ftsz;
+}
+
 #define frame_pc(f) ((const BCIns *)frame_ftsz(f))
 #define setframe_ftsz(f, sz) ((f)->ftsz = (sz))
 #define setframe_pc(f, pc) ((f)->ftsz = (int64_t)(intptr_t)(pc))
@@ -650,8 +664,15 @@ enum
 #define frame_iscont(f) (frame_typep(f) == FRAME_CONT)
 #define frame_isvarg(f) (frame_typep(f) == FRAME_VARG)
 #define frame_ispcall(f) ((frame_ftsz(f) & 6) == FRAME_PCALL)
-
 #define frame_func(f) (&frame_gc(f)->fn)
+
+
+// static __always_inline GCfunc frame_func(GCobj* obj) {
+// 	GCfunc fn;
+// 	bpf_probe_read_user(&fn, sizeof(fn), &obj->fn);
+// 	return fn;
+// }
+
 #define frame_delta(f) (frame_ftsz(f) >> 3)
 #define frame_sized(f) (frame_ftsz(f) & ~FRAME_TYPEP)
 
@@ -664,39 +685,24 @@ enum
 #define frame_iscont_fficb(f) \
   (LJ_HASFFI && frame_contv(f) == LJ_CONT_FFI_CALLBACK)
 
-#define frame_prevl(f) ((f) - (1 + LJ_FR2 + bc_a(frame_pc(f)[-1])))
+static __always_inline BCIns frame_pc_prev(const BCIns *bcins) {
+  const BCIns bcins_prev;
+  bpf_probe_read_user((void*)&bcins_prev, sizeof(bcins_prev), bcins - 1);
+  return bcins_prev;
+}
+
+#define frame_prevl(f) ((f) - (1 + LJ_FR2 + bc_a(frame_pc_prev(frame_pc(f)))))
 #define frame_prevd(f) ((TValue *)((char *)(f)-frame_sized(f)))
 #define frame_prev(f) (frame_islua(f) ? frame_prevl(f) : frame_prevd(f))
 
-/* Get frame corresponding to a level. */
-static cTValue *lj_debug_frame(lua_State *L, int level, int *size)
-{
-  cTValue *frame, *nextframe, *bot = tvref(L->stack) + LJ_FR2;
-  /* Traverse frames backwards. */
-  // for (nextframe = frame = L->base - 1; frame > bot;)
-  // {
-  //   if (frame_gc(frame) == obj2gco(L))
-  //     level++; /* Skip dummy frames. See lj_err_optype_call(). */
+#define strref(r)	(&gcref((r))->str)
 
-  //   if (level-- == 0)
-  //   {
-  //     *size = (int)(nextframe - frame);
-  //     return frame; /* Level found. */
-  //   }
-  //   nextframe = frame;
-  //   if (frame_islua(frame))
-  //   {
-  //     frame = frame_prevl(frame);
-  //   }
-  //   else
-  //   {
-  //     if (frame_isvarg(frame))
-  //       level++; /* Skip vararg pseudo-frame. */
-  //     frame = frame_prevd(frame);
-  //   }
-  // }
-  *size = level;
-  return NULL; /* Level not found. */
+static __always_inline GCstr *proto_chunkname(GCproto *pt)
+{ 
+  GCRef chunkname;
+  bpf_probe_read_user(&chunkname, sizeof(GCRef), &pt->chunkname);
+  return strref(chunkname);
 }
+
 
 #endif

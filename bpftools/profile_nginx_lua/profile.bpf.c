@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /* Copyright (c) 2022 LG Electronics */
-#include "lua_state.h"
+#include "lua_debug.h"
 #include "profile.h"
 #include "maps.bpf.h"
 
@@ -10,28 +10,32 @@ const volatile bool include_idle = false;
 const volatile pid_t targ_pid = -1;
 const volatile pid_t targ_tid = -1;
 
-struct {
+struct
+{
 	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
 	__type(key, u32);
 } stackmap SEC(".maps");
 
-struct {
+struct
+{
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct key_t);
 	__type(value, sizeof(u64));
 	__uint(max_entries, MAX_ENTRIES);
 } counts SEC(".maps");
 
-#define MAX_ENTRIES	10240
+#define MAX_ENTRIES 10240
 
-struct {
+struct
+{
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, __u32);
 	__type(value, struct nginx_event);
 } starts_nginx SEC(".maps");
 
-struct {
+struct
+{
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(key_size, sizeof(__u32));
 	__uint(value_size, sizeof(__u32));
@@ -43,20 +47,123 @@ struct {
  * TODO: use end address of user space to determine the address space of ip
  */
 #if defined(__TARGET_ARCH_arm64) || defined(__TARGET_ARCH_x86)
-#define BITS_PER_ADDR	(64)
-#define MSB_SET_ULONG	(1UL << (BITS_PER_ADDR - 1))
-static __always_inline
-bool is_kernel_addr(u64 addr)
+#define BITS_PER_ADDR (64)
+#define MSB_SET_ULONG (1UL << (BITS_PER_ADDR - 1))
+static __always_inline bool is_kernel_addr(u64 addr)
 {
 	return !!(addr & MSB_SET_ULONG);
 }
 #else
-static __always_inline
-bool is_kernel_addr(u64 addr)
+static __always_inline bool is_kernel_addr(u64 addr)
 {
 	return false;
 }
 #endif /* __TARGET_ARCH_arm64 || __TARGET_ARCH_x86 */
+
+/* Get frame corresponding to a level. */
+static size_t lj_debug_frame(lua_State *L, int level)
+{
+	MRef stack;
+	bpf_probe_read_user(&stack, sizeof(stack), &L->stack);
+	cTValue *frame, *nextframe, *bot = tvref(stack) + LJ_FR2;
+	int size;
+
+	int i = 0;
+	bpf_probe_read_user(&nextframe, sizeof(nextframe), &L->base);
+	bpf_probe_read_user(&frame, sizeof(frame), &L->base);
+	/* Traverse frames backwards. */
+	for (; i < 10 && frame > bot; i++)
+	{
+		if (frame_gc(frame) == obj2gco(L))
+		{
+			bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
+			level++; /* Skip dummy frames. See lj_err_optype_call(). */
+		}
+		if (level-- == 0)
+		{
+			bpf_printk("Level found, frame=%p, nextframe=%p\n", frame, nextframe);
+			size = (int)(nextframe - frame);
+			size_t i_ci = ((size << 16) + (frame - bot)) / sizeof(TValue);
+			return i_ci; /* Level found. */
+		}
+		nextframe = frame;
+		if (frame_islua(frame))
+		{
+			frame = frame_prevl(frame);
+		}
+		else
+		{
+			if (frame_isvarg(frame))
+				level++; /* Skip vararg pseudo-frame. */
+			frame = frame_prevd(frame);
+		}
+	}
+	bpf_printk("Level not found\n");
+	return 0; /* Level not found. */
+}
+
+static __always_inline GCproto *funcproto(GCfunc *fn)
+{
+	GCfuncL l;
+	bpf_probe_read_user(&l, sizeof(l), &fn->l);
+	return (GCproto *)l.pc.ptr64 - 1;
+}
+
+static void lua_getinfo(lua_State *L, size_t i_ci)
+{
+	size_t offset = (i_ci & 0xffff);
+	if (offset == 0)
+	{
+		bpf_printk("assertion failed: offset == 0: i_ci=%x", i_ci);
+		return;
+	}
+
+	cTValue *frame, *nextframe;
+	MRef stack;
+	bpf_probe_read_user(&stack, sizeof(stack), &L->stack);
+	frame = tvref(stack) + offset;
+
+	size_t size = (i_ci >> 16);
+	if (size)
+	{
+		nextframe = frame + size;
+	}
+	else
+	{
+		nextframe = 0;
+	}
+	bpf_printk("getinfo:frame=%p, nextframe=%p\n", frame, nextframe);
+	MRef maxstack_mref;
+	bpf_probe_read_user(&maxstack_mref, sizeof(maxstack_mref), &L->maxstack);
+	cTValue *maxstack = tvref(maxstack_mref);
+
+	if (!(frame <= maxstack && (!nextframe || nextframe <= maxstack)))
+	{
+		bpf_printk("assertion failed: frame <= maxstack && (!nextframe || nextframe <= maxstack)\n");
+		return;
+	}
+
+	GCfunc *fn = frame_func(frame);
+	GCfuncC c;
+	bpf_probe_read_user(&c, sizeof(c), &fn->c);
+	if (!(c.gct == 8))
+	{
+		bpf_printk("assertion failed: fn->c.gct == ~LJ_TFUNC: %d", c.gct);
+		return;
+	}
+
+	// isluafunc(fn)
+	if (c.ffid == FF_LUA)
+	{
+		GCproto *pt = funcproto(fn);
+		BCLine firstline;
+		bpf_probe_read_user(&firstline, sizeof(firstline), &pt->firstline);
+		GCstr *name = proto_chunkname(pt); /* GCstr *name */
+		const char *src = strdata(name);
+		bpf_printk("src=%s\n", src);
+		return;
+	}
+}
 
 static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 {
@@ -65,17 +172,23 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	eventp = bpf_map_lookup_elem(&starts_nginx, &tid);
 	if (!eventp)
 		return 0;
+
 	/* update time from timestamp to delta */
 	eventp->time = bpf_ktime_get_ns() - eventp->time;
 	bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 
 	lua_State *L = eventp->L;
-	int size = 0;
-	cTValue *ctv = lj_debug_frame(L, 1, &size);
-	//bpf_map_delete_elem(&starts_nginx, &tid);
+	if (!L)
+		return 0;
+	size_t i_ci = lj_debug_frame(L, 3);
+	// cTValue *frame = NULL;
+	// frame = BPF_CORE_READ_USER(&L, base);
+	// bpf_probe_read_user(&frame, sizeof(frame), &L->base);
+	bpf_printk("lj_debug_frame i_ci %llu.\n", i_ci);
+	lua_getinfo(L, i_ci);
+	// bpf_map_delete_elem(&starts_nginx, &tid);
 	return 0;
 }
-
 
 SEC("perf_event")
 int do_perf_event(struct bpf_perf_event_data *ctx)
@@ -108,12 +221,14 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	else
 		key.user_stack_id = bpf_get_stackid(&ctx->regs, &stackmap, BPF_F_USER_STACK);
 
-	if (key.kern_stack_id >= 0) {
+	if (key.kern_stack_id >= 0)
+	{
 		// populate extras to fix the kernel stack
 		__u64 ip = PT_REGS_IP(&ctx->regs);
 
-		if (is_kernel_addr(ip)) {
-		    key.kernel_ip = ip;
+		if (is_kernel_addr(ip))
+		{
+			key.kernel_ip = ip;
 		}
 	}
 
@@ -125,7 +240,6 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 
 	return 0;
 }
-
 
 static int probe_entry_lua(struct pt_regs *ctx)
 {
@@ -139,14 +253,13 @@ static int probe_entry_lua(struct pt_regs *ctx)
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
-
 	event.time = bpf_ktime_get_ns();
 	event.pid = pid;
-	//bpf_get_current_comm(&event.comm, sizeof(event.comm));
-	//bpf_probe_read_user(&event.host, sizeof(event.host), (void *)PT_REGS_PARM4(ctx));
+	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
+	// bpf_probe_read_user(&event.host, sizeof(event.host), (void *)PT_REGS_PARM4(ctx));
 	event.L = (void *)PT_REGS_PARM1(ctx);
 	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
-	//bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
+	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 
@@ -155,6 +268,5 @@ int handle_entry_lua(struct pt_regs *ctx)
 {
 	return probe_entry_lua(ctx);
 }
-
 
 char LICENSE[] SEC("license") = "GPL";

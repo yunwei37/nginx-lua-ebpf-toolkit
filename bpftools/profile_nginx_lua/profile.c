@@ -506,8 +506,8 @@ static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-	printf("%-8s %-7d %-10.3f\n",
-	       ts, e->pid, (double)e->time/1000000);
+	printf("%-8s %-7d %-10.3f %s\n",
+	       ts, e->pid, (double)e->time/1000000, e->name);
 }
 
 static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)

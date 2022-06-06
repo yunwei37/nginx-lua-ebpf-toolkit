@@ -19,6 +19,7 @@ struct nginx_event
 {
 	__u64 time;
 	__u32 pid;
+	char name[HOST_LEN];
 	void *L;
 };
 
