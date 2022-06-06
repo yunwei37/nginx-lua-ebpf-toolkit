@@ -519,16 +519,29 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 {
 	int err;
 	char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
+	char *lua_path = "/usr/local/openresty/luajit/lib/libluajit-5.1.so.2.1.0";
 
 	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_cache_load_code");
 	if (func_off < 0) {
 		warn("could not find getaddrinfo in %s\n", nginx_path);
 		return -1;
 	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_nginx, false,
 					      -1, nginx_path, func_off);
 	if (!links[0]) {
 		warn("failed to attach getaddrinfo: %d\n", -errno);
+		return -1;
+	}
+
+	func_off = get_elf_func_offset(lua_path, "lua_resume");
+	if (func_off < 0) {
+		warn("could not find lua_resume in %s\n", lua_path);
+		return -1;
+	}
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
+					      -1, lua_path, func_off);
+	if (!links[0]) {
+		warn("failed to attach lua_resume: %d\n", -errno);
 		return -1;
 	}
 	return 0;

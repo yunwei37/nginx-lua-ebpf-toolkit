@@ -180,11 +180,10 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	lua_State *L = eventp->L;
 	if (!L)
 		return 0;
-	size_t i_ci = lj_debug_frame(L, 3);
-	// cTValue *frame = NULL;
-	// frame = BPF_CORE_READ_USER(&L, base);
-	// bpf_probe_read_user(&frame, sizeof(frame), &L->base);
-	bpf_printk("lj_debug_frame i_ci %llu.\n", i_ci);
+	size_t i_ci = lj_debug_frame(L, 1);
+	cTValue *frame = NULL;
+	bpf_probe_read_user(&frame, sizeof(frame), &L->base);
+	bpf_printk("lj_debug_frame i_ci %p. is lua %d\n", i_ci, frame_islua(frame));
 	lua_getinfo(L, i_ci);
 	// bpf_map_delete_elem(&starts_nginx, &tid);
 	return 0;
@@ -241,6 +240,36 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	return 0;
 }
 
+static int probe_entry_nginx(struct pt_regs *ctx)
+{
+	if (!PT_REGS_PARM2(ctx))
+		return 0;
+	if (!PT_REGS_PARM4(ctx))
+		return 0;
+
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 pid = pid_tgid >> 32;
+	__u32 tid = (__u32)pid_tgid;
+	struct nginx_event event = {};
+
+	if (targ_pid != -1 && targ_pid != pid)
+		return 0;
+	event.time = bpf_ktime_get_ns();
+	event.pid = pid;
+	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
+	bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
+	event.L = (void *)PT_REGS_PARM2(ctx);
+	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
+	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
+	return 0;
+}
+
+SEC("kprobe/handle_entry_nginx")
+int handle_entry_nginx(struct pt_regs *ctx)
+{
+	return probe_entry_nginx(ctx);
+}
+
 static int probe_entry_lua(struct pt_regs *ctx)
 {
 	if (!PT_REGS_PARM1(ctx))
@@ -256,10 +285,10 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	event.time = bpf_ktime_get_ns();
 	event.pid = pid;
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
-	// bpf_probe_read_user(&event.host, sizeof(event.host), (void *)PT_REGS_PARM4(ctx));
+	//bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
 	event.L = (void *)PT_REGS_PARM1(ctx);
 	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
-	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
+	bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 
@@ -268,5 +297,6 @@ int handle_entry_lua(struct pt_regs *ctx)
 {
 	return probe_entry_lua(ctx);
 }
+
 
 char LICENSE[] SEC("license") = "GPL";
