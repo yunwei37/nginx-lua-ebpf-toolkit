@@ -32,6 +32,76 @@ typedef struct GCRef
 #define LJ_FR2 0
 #endif
 
+
+/* Optional defines. */
+#ifndef LJ_FASTCALL
+#define LJ_FASTCALL
+#endif
+#ifndef LJ_NORET
+#define LJ_NORET
+#endif
+#ifndef LJ_NOAPI
+#define LJ_NOAPI	extern
+#endif
+#ifndef LJ_LIKELY
+#define LJ_LIKELY(x)	(x)
+#define LJ_UNLIKELY(x)	(x)
+#endif
+
+/* Attributes for internal functions. */
+#define LJ_DATA		LJ_NOAPI
+#define LJ_DATADEF
+#define LJ_ASMF		LJ_NOAPI
+#define LJ_FUNCA	LJ_NOAPI
+#if defined(ljamalg_c)
+#define LJ_FUNC		static
+#else
+#define LJ_FUNC		LJ_NOAPI
+#endif
+#define LJ_FUNC_NORET	LJ_FUNC LJ_NORET
+#define LJ_FUNCA_NORET	LJ_FUNCA LJ_NORET
+#define LJ_ASMF_NORET	LJ_ASMF LJ_NORET
+
+/* Internal assertions. */
+#if defined(LUA_USE_ASSERT) || defined(LUA_USE_APICHECK)
+#define lj_assert_check(g, c, ...) \
+  ((c) ? (void)0 : \
+   (lj_assert_fail((g), __FILE__, __LINE__, __func__, __VA_ARGS__), 0))
+#define lj_checkapi(c, ...)	lj_assert_check(G(L), (c), __VA_ARGS__)
+#else
+#define lj_checkapi(c, ...)	((void)L)
+#endif
+
+#ifdef LUA_USE_ASSERT
+#define lj_assertG_(g, c, ...)	lj_assert_check((g), (c), __VA_ARGS__)
+#define lj_assertG(c, ...)	lj_assert_check(g, (c), __VA_ARGS__)
+#define lj_assertL(c, ...)	lj_assert_check(G(L), (c), __VA_ARGS__)
+#define lj_assertX(c, ...)	lj_assert_check(NULL, (c), __VA_ARGS__)
+#define check_exp(c, e)		(lj_assertX((c), #c), (e))
+#else
+#define lj_assertG_(g, c, ...)	((void)0)
+#define lj_assertG(c, ...)	((void)g)
+#define lj_assertL(c, ...)	((void)L)
+#define lj_assertX(c, ...)	((void)0)
+#define check_exp(c, e)		(e)
+#endif
+
+/* Static assertions. */
+#define LJ_ASSERT_NAME2(name, line)	name ## line
+#define LJ_ASSERT_NAME(line)		LJ_ASSERT_NAME2(lj_assert_, line)
+#ifdef __COUNTER__
+#define LJ_STATIC_ASSERT(cond) \
+  extern void LJ_ASSERT_NAME(__COUNTER__)(int STATIC_ASSERTION_FAILED[(cond)?1:-1])
+#else
+#define LJ_STATIC_ASSERT(cond) \
+  extern void LJ_ASSERT_NAME(__LINE__)(int STATIC_ASSERTION_FAILED[(cond)?1:-1])
+#endif
+
+/* PRNG state. Need this here, details in lj_prng.h. */
+typedef struct PRNGState {
+  uint64_t u[4];
+} PRNGState;
+
 /* Common GC header for all collectable objects. */
 #define GCHeader  \
   GCRef nextgc;   \
@@ -346,7 +416,7 @@ typedef struct GCstr {
   MSize len;		/* Size of string. */
 } GCstr;
 
-//#define strref(r)	(&gcref((r))->str)
+#define strref(r)	(&gcref((r))->str)
 #define strdata(s)	((const char *)((s)+1))
 #define strdatawr(s)	((char *)((s)+1))
 /* -- Userdata object ----------------------------------------------------- */
@@ -520,6 +590,8 @@ typedef union GCfunc {
 #define isluafunc(fn)	((fn)->c.ffid == FF_LUA)
 #define iscfunc(fn)	((fn)->c.ffid == FF_C)
 #define isffunc(fn)	((fn)->c.ffid > FF_C)
+#define funcproto(fn) \
+  check_exp(isluafunc(fn), (GCproto *)(mref(BPF_PROBE_READ_USER((fn),l.pc), char)-sizeof(GCproto)))
 #define sizeCfunc(n)	(sizeof(GCfuncC)-sizeof(TValue)+sizeof(TValue)*(n))
 #define sizeLfunc(n)	(sizeof(GCfuncL)-sizeof(GCRef)+sizeof(GCRef)*(n))
 
@@ -577,12 +649,13 @@ typedef union GCobj {
 
 #if LJ_GC64
 //#define gcval(o) ((GCobj *)(gcrefu((o)->gcr) & LJ_GCVMASK))
+#define gcval(o) ((GCobj *)(gcrefu(BPF_PROBE_READ_USER(o, gcr)) & LJ_GCVMASK))
 
-static __always_inline GCobj * gcval(cTValue *frame) {
-	GCRef gcr;
-	bpf_probe_read_user(&gcr, sizeof(gcr), &frame->gcr);
-	return (GCobj*)(gcr.gcptr64 & LJ_GCVMASK);
-}
+// static __always_inline GCobj * gcval(cTValue *frame) {
+// 	GCRef gcr;
+// 	bpf_probe_read_user(&gcr, sizeof(gcr), &frame->gcr);
+// 	return (GCobj*)(gcr.gcptr64 & LJ_GCVMASK);
+// }
 
 #else
 #define gcval(o) (gcref((o)->gcr))
@@ -697,14 +770,128 @@ static __always_inline BCIns frame_pc_prev(const BCIns *bcins) {
 #define frame_prevd(f) ((TValue *)((char *)(f)-frame_sized(f)))
 #define frame_prev(f) (frame_islua(f) ? frame_prevl(f) : frame_prevd(f))
 
-#define strref(r)	(&gcref((r))->str)
+/* -- State objects ------------------------------------------------------- */
 
-// static __always_inline GCstr *proto_chunkname(GCproto *pt)
-// { 
-//   GCRef chunkname;
-//   bpf_probe_read_user(&chunkname, sizeof(GCRef), &pt->chunkname);
-//   return strref(chunkname);
-// }
+/* VM states. */
+enum {
+  LJ_VMST_INTERP,	/* Interpreter. */
+  LJ_VMST_C,		/* C function. */
+  LJ_VMST_GC,		/* Garbage collector. */
+  LJ_VMST_EXIT,		/* Trace exit handler. */
+  LJ_VMST_RECORD,	/* Trace recorder. */
+  LJ_VMST_OPT,		/* Optimizer. */
+  LJ_VMST_ASM,		/* Assembler. */
+  LJ_VMST__MAX
+};
 
+#define setvmstate(g, st)	((g)->vmstate = ~LJ_VMST_##st)
+
+/* Metamethods. ORDER MM */
+#ifdef LJ_HASFFI
+#define MMDEF_FFI(_) _(new)
+#else
+#define MMDEF_FFI(_)
+#endif
+
+#if LJ_52 || LJ_HASFFI
+#define MMDEF_PAIRS(_) _(pairs) _(ipairs)
+#else
+#define MMDEF_PAIRS(_)
+#define MM_pairs	255
+#define MM_ipairs	255
+#endif
+
+#define MMDEF(_) \
+  _(index) _(newindex) _(gc) _(mode) _(eq) _(len) \
+  /* Only the above (fast) metamethods are negative cached (max. 8). */ \
+  _(lt) _(le) _(concat) _(call) \
+  /* The following must be in ORDER ARITH. */ \
+  _(add) _(sub) _(mul) _(div) _(mod) _(pow) _(unm) \
+  /* The following are used in the standard libraries. */ \
+  _(metatable) _(tostring) MMDEF_FFI(_) MMDEF_PAIRS(_)
+
+typedef enum {
+#define MMENUM(name)	MM_##name,
+MMDEF(MMENUM)
+#undef MMENUM
+  MM__MAX,
+  MM____ = MM__MAX,
+  MM_FAST = MM_len
+} MMS;
+
+/* GC root IDs. */
+typedef enum {
+  GCROOT_MMNAME,	/* Metamethod names. */
+  GCROOT_MMNAME_LAST = GCROOT_MMNAME + MM__MAX-1,
+  GCROOT_BASEMT,	/* Metatables for base types. */
+  GCROOT_BASEMT_NUM = GCROOT_BASEMT + ~LJ_TNUMX,
+  GCROOT_IO_INPUT,	/* Userdata for default I/O input file. */
+  GCROOT_IO_OUTPUT,	/* Userdata for default I/O output file. */
+  GCROOT_MAX
+} GCRootID;
+
+#define basemt_it(g, it)	((g)->gcroot[GCROOT_BASEMT+~(it)])
+#define basemt_obj(g, o)	((g)->gcroot[GCROOT_BASEMT+itypemap(o)])
+#define mmname_str(g, mm)	(strref((g)->gcroot[GCROOT_MMNAME+(mm)]))
+
+/* Garbage collector state. */
+typedef struct GCState {
+  GCSize total;		/* Memory currently allocated. */
+  GCSize threshold;	/* Memory threshold. */
+  uint8_t currentwhite;	/* Current white color. */
+  uint8_t state;	/* GC state. */
+  uint8_t nocdatafin;	/* No cdata finalizer called. */
+#if LJ_64
+  uint8_t lightudnum;	/* Number of lightuserdata segments - 1. */
+#else
+  uint8_t unused1;
+#endif
+  MSize sweepstr;	/* Sweep position in string table. */
+  GCRef root;		/* List of all collectable objects. */
+  MRef sweep;		/* Sweep position in root list. */
+  GCRef gray;		/* List of gray objects. */
+  GCRef grayagain;	/* List of objects for atomic traversal. */
+  GCRef weak;		/* List of weak tables (to be cleared). */
+  GCRef mmudata;	/* List of userdata (to be finalized). */
+  GCSize debt;		/* Debt (how much GC is behind schedule). */
+  GCSize estimate;	/* Estimate of memory actually in use. */
+  MSize stepmul;	/* Incremental GC step granularity. */
+  MSize pause;		/* Pause between successive GC cycles. */
+#if LJ_64
+  MRef lightudseg;	/* Upper bits of lightuserdata segments. */
+#endif
+} GCState;
+
+#define mainthread(g)	(&gcref(g->mainthref)->th)
+#define niltv(L) \
+  check_exp(tvisnil(&G(L)->nilnode.val), &G(L)->nilnode.val)
+#define niltvg(g) \
+  check_exp(tvisnil(&(g)->nilnode.val), &(g)->nilnode.val)
+
+/* Hook management. Hook event masks are defined in lua.h. */
+#define HOOK_EVENTMASK		0x0f
+#define HOOK_ACTIVE		0x10
+#define HOOK_ACTIVE_SHIFT	4
+#define HOOK_VMEVENT		0x20
+#define HOOK_GC			0x40
+#define HOOK_PROFILE		0x80
+#define hook_active(g)		((g)->hookmask & HOOK_ACTIVE)
+#define hook_enter(g)		((g)->hookmask |= HOOK_ACTIVE)
+#define hook_entergc(g) \
+  ((g)->hookmask = ((g)->hookmask | (HOOK_ACTIVE|HOOK_GC)) & ~HOOK_PROFILE)
+#define hook_vmevent(g)		((g)->hookmask |= (HOOK_ACTIVE|HOOK_VMEVENT))
+#define hook_leave(g)		((g)->hookmask &= ~HOOK_ACTIVE)
+#define hook_save(g)		((g)->hookmask & ~HOOK_EVENTMASK)
+#define hook_restore(g, h) \
+  ((g)->hookmask = ((g)->hookmask & HOOK_EVENTMASK) | (h))
+
+
+/* thread status */
+#define LUA_OK		0
+#define LUA_YIELD	1
+#define LUA_ERRRUN	2
+#define LUA_ERRSYNTAX	3
+#define LUA_ERRMEM	4
+#define LUA_ERRERR	5
 
 #endif
