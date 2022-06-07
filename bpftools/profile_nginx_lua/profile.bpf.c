@@ -63,14 +63,11 @@ static __always_inline bool is_kernel_addr(u64 addr)
 /* Get frame corresponding to a level. */
 static size_t lj_debug_frame(lua_State *L, int level)
 {
-	MRef stack;
-	bpf_probe_read_user(&stack, sizeof(stack), &L->stack);
-	cTValue *frame, *nextframe, *bot = tvref(stack) + LJ_FR2;
+	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
 	int size;
 
 	int i = 0;
-	bpf_probe_read_user(&nextframe, sizeof(nextframe), &L->base);
-	bpf_probe_read_user(&frame, sizeof(frame), &L->base);
+	frame = nextframe = BPF_PROBE_READ_USER(L, base);
 	/* Traverse frames backwards. */
 	for (; i < 10 && frame > bot; i++)
 	{
@@ -81,9 +78,10 @@ static size_t lj_debug_frame(lua_State *L, int level)
 		}
 		if (level-- == 0)
 		{
-			bpf_printk("Level found, frame=%p, nextframe=%p\n", frame, nextframe);
-			size = (int)(nextframe - frame);
-			size_t i_ci = ((size << 16) + (frame - bot)) / sizeof(TValue);
+			size_t size = (nextframe - frame) / sizeof(TValue);
+			size_t i_ci = (size << 16) + (frame - bot) / sizeof(TValue);
+			bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+			bpf_printk("i_ci=%d\n", i_ci);
 			return i_ci; /* Level found. */
 		}
 		nextframe = frame;
@@ -119,9 +117,7 @@ static void lua_getinfo(lua_State *L, size_t i_ci)
 	}
 
 	cTValue *frame, *nextframe;
-	MRef stack;
-	bpf_probe_read_user(&stack, sizeof(stack), &L->stack);
-	frame = tvref(stack) + offset;
+	frame = tvref(BPF_PROBE_READ_USER(L, stack)) + offset;
 
 	size_t size = (i_ci >> 16);
 	if (size)
@@ -151,7 +147,6 @@ static void lua_getinfo(lua_State *L, size_t i_ci)
 		bpf_printk("assertion failed: fn->c.gct == ~LJ_TFUNC: %d", c.gct);
 		return;
 	}
-
 	// isluafunc(fn)
 	if (c.ffid == FF_LUA)
 	{
@@ -180,12 +175,12 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	lua_State *L = eventp->L;
 	if (!L)
 		return 0;
+	bpf_printk("perf get lua_state %p\n", L);
 	size_t i_ci = lj_debug_frame(L, 1);
 	cTValue *frame = NULL;
-	bpf_probe_read_user(&frame, sizeof(frame), &L->base);
-	bpf_printk("lj_debug_frame i_ci %p. is lua %d\n", i_ci, frame_islua(frame));
+	frame = BPF_PROBE_READ_USER(L, base);
+	bpf_printk("lj_debug_frame %p. is lua %d\n", frame, frame_islua(frame));
 	lua_getinfo(L, i_ci);
-	// bpf_map_delete_elem(&starts_nginx, &tid);
 	return 0;
 }
 
@@ -250,22 +245,23 @@ static int probe_entry_nginx(struct pt_regs *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
-	struct nginx_event event = {};
+	// struct nginx_event event = {};
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
-	event.time = bpf_ktime_get_ns();
-	event.pid = pid;
+	// event.time = bpf_ktime_get_ns();
+	// event.pid = pid;
+	bpf_map_delete_elem(&starts_nginx, &tid);
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
-	bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
-	event.L = (void *)PT_REGS_PARM2(ctx);
-	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
+	// bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
+	// event.L = (void *)PT_REGS_PARM2(ctx);
+	// bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
 	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 
-SEC("kprobe/handle_entry_nginx")
-int handle_entry_nginx(struct pt_regs *ctx)
+SEC("kprobe/handle_entry_lua_cancel")
+int handle_entry_lua_cancel(struct pt_regs *ctx)
 {
 	return probe_entry_nginx(ctx);
 }
@@ -285,18 +281,18 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	event.time = bpf_ktime_get_ns();
 	event.pid = pid;
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
-	//bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
 	event.L = (void *)PT_REGS_PARM1(ctx);
+	// bpf_printk("lua_state %p\n", event.L);
 	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
 	bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
+
 
 SEC("kprobe/handle_entry_lua")
 int handle_entry_lua(struct pt_regs *ctx)
 {
 	return probe_entry_lua(ctx);
 }
-
 
 char LICENSE[] SEC("license") = "GPL";

@@ -23,14 +23,16 @@
 #include "uprobe_helpers.h"
 
 /* This structure combines key_t and count which should be sorted together */
-struct key_ext_t {
+struct key_ext_t
+{
 	struct key_t k;
 	__u64 v;
 };
 
 bool exiting = false;
 
-static struct env {
+static struct env
+{
 	pid_t pid;
 	pid_t tid;
 	bool user_stacks_only;
@@ -62,43 +64,43 @@ const char *argp_program_version = "profile 0.1";
 const char *argp_program_bug_address =
 	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
-"Profile CPU usage by sampling stack traces at a timed interval.\n"
-"\n"
-"USAGE: profile [OPTIONS...] [duration]\n"
-"EXAMPLES:\n"
-"    profile             # profile stack traces at 49 Hertz until Ctrl-C\n"
-"    profile -F 99       # profile stack traces at 99 Hertz\n"
-"    profile -c 1000000  # profile stack traces every 1 in a million events\n"
-"    profile 5           # profile at 49 Hertz for 5 seconds only\n"
-"    profile -f          # output in folded format for flame graphs\n"
-"    profile -p 185      # only profile process with PID 185\n"
-"    profile -L 185      # only profile thread with TID 185\n"
-"    profile -U          # only show user space stacks (no kernel)\n"
-"    profile -K          # only show kernel space stacks (no user)\n";
+	"Profile CPU usage by sampling stack traces at a timed interval.\n"
+	"\n"
+	"USAGE: profile [OPTIONS...] [duration]\n"
+	"EXAMPLES:\n"
+	"    profile             # profile stack traces at 49 Hertz until Ctrl-C\n"
+	"    profile -F 99       # profile stack traces at 99 Hertz\n"
+	"    profile -c 1000000  # profile stack traces every 1 in a million events\n"
+	"    profile 5           # profile at 49 Hertz for 5 seconds only\n"
+	"    profile -f          # output in folded format for flame graphs\n"
+	"    profile -p 185      # only profile process with PID 185\n"
+	"    profile -L 185      # only profile thread with TID 185\n"
+	"    profile -U          # only show user space stacks (no kernel)\n"
+	"    profile -K          # only show kernel space stacks (no user)\n";
 
-#define OPT_PERF_MAX_STACK_DEPTH	1 /* --perf-max-stack-depth */
-#define OPT_STACK_STORAGE_SIZE		2 /* --stack-storage-size */
-#define PERF_BUFFER_PAGES	16
-#define PERF_POLL_TIMEOUT_MS	100
+#define OPT_PERF_MAX_STACK_DEPTH 1 /* --perf-max-stack-depth */
+#define OPT_STACK_STORAGE_SIZE 2   /* --stack-storage-size */
+#define PERF_BUFFER_PAGES 16
+#define PERF_POLL_TIMEOUT_MS 100
 
 static const struct argp_option opts[] = {
-	{ "pid", 'p', "PID", 0, "profile process with this PID only" },
-	{ "tid", 'L', "TID", 0, "profile thread with this TID only" },
-	{ "user-stacks-only", 'U', NULL, 0,
-	  "show stacks from user space only (no kernel space stacks)" },
-	{ "kernel-stacks-only", 'K', NULL, 0,
-	  "show stacks from kernel space only (no user space stacks)" },
-	{ "frequency", 'F', "FREQUENCY", 0, "sample frequency, Hertz" },
-	{ "delimited", 'd', NULL, 0, "insert delimiter between kernel/user stacks" },
-	{ "include-idle ", 'I', NULL, 0, "include CPU idle stacks" },
-	{ "folded", 'f', NULL, 0, "output folded format, one line per stack (for flame graphs)" },
-	{ "stack-storage-size", OPT_STACK_STORAGE_SIZE, "STACK-STORAGE-SIZE", 0,
-	  "the number of unique stack traces that can be stored and displayed (default 1024)" },
-	{ "cpu", 'C', "CPU", 0, "cpu number to run profile on" },
-	{ "perf-max-stack-depth", OPT_PERF_MAX_STACK_DEPTH,
-	  "PERF-MAX-STACK-DEPTH", 0, "the limit for both kernel and user stack traces (default 127)" },
-	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
-	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
+	{"pid", 'p', "PID", 0, "profile process with this PID only"},
+	{"tid", 'L', "TID", 0, "profile thread with this TID only"},
+	{"user-stacks-only", 'U', NULL, 0,
+	 "show stacks from user space only (no kernel space stacks)"},
+	{"kernel-stacks-only", 'K', NULL, 0,
+	 "show stacks from kernel space only (no user space stacks)"},
+	{"frequency", 'F', "FREQUENCY", 0, "sample frequency, Hertz"},
+	{"delimited", 'd', NULL, 0, "insert delimiter between kernel/user stacks"},
+	{"include-idle ", 'I', NULL, 0, "include CPU idle stacks"},
+	{"folded", 'f', NULL, 0, "output folded format, one line per stack (for flame graphs)"},
+	{"stack-storage-size", OPT_STACK_STORAGE_SIZE, "STACK-STORAGE-SIZE", 0,
+	 "the number of unique stack traces that can be stored and displayed (default 1024)"},
+	{"cpu", 'C', "CPU", 0, "cpu number to run profile on"},
+	{"perf-max-stack-depth", OPT_PERF_MAX_STACK_DEPTH,
+	 "PERF-MAX-STACK-DEPTH", 0, "the limit for both kernel and user stack traces (default 127)"},
+	{"verbose", 'v', NULL, 0, "Verbose debug output"},
+	{NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help"},
 	{},
 };
 
@@ -106,7 +108,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	static int pos_args;
 
-	switch (key) {
+	switch (key)
+	{
 	case 'h':
 		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
 		break;
@@ -116,7 +119,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'p':
 		errno = 0;
 		env.pid = strtol(arg, NULL, 10);
-		if (errno) {
+		if (errno)
+		{
 			fprintf(stderr, "invalid PID: %s\n", arg);
 			argp_usage(state);
 		}
@@ -124,7 +128,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'L':
 		errno = 0;
 		env.tid = strtol(arg, NULL, 10);
-		if (errno || env.tid <= 0) {
+		if (errno || env.tid <= 0)
+		{
 			fprintf(stderr, "Invalid TID: %s\n", arg);
 			argp_usage(state);
 		}
@@ -138,7 +143,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'F':
 		errno = 0;
 		env.sample_freq = strtol(arg, NULL, 10);
-		if (errno || env.sample_freq <= 0) {
+		if (errno || env.sample_freq <= 0)
+		{
 			fprintf(stderr, "invalid FREQUENCY: %s\n", arg);
 			argp_usage(state);
 		}
@@ -155,7 +161,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'C':
 		errno = 0;
 		env.cpu = strtol(arg, NULL, 10);
-		if (errno) {
+		if (errno)
+		{
 			fprintf(stderr, "invalid CPU: %s\n", arg);
 			argp_usage(state);
 		}
@@ -163,7 +170,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_PERF_MAX_STACK_DEPTH:
 		errno = 0;
 		env.perf_max_stack_depth = strtol(arg, NULL, 10);
-		if (errno) {
+		if (errno)
+		{
 			fprintf(stderr, "invalid perf max stack depth: %s\n", arg);
 			argp_usage(state);
 		}
@@ -171,20 +179,23 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_STACK_STORAGE_SIZE:
 		errno = 0;
 		env.stack_storage_size = strtol(arg, NULL, 10);
-		if (errno) {
+		if (errno)
+		{
 			fprintf(stderr, "invalid stack storage size: %s\n", arg);
 			argp_usage(state);
 		}
 		break;
 	case ARGP_KEY_ARG:
-		if (pos_args++) {
+		if (pos_args++)
+		{
 			fprintf(stderr,
-				"Unrecognized positional argument: %s\n", arg);
+					"Unrecognized positional argument: %s\n", arg);
 			argp_usage(state);
 		}
 		errno = 0;
 		env.duration = strtol(arg, NULL, 10);
-		if (errno || env.duration <= 0) {
+		if (errno || env.duration <= 0)
+		{
 			fprintf(stderr, "Invalid duration (in s): %s\n", arg);
 			argp_usage(state);
 		}
@@ -198,7 +209,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 static int nr_cpus;
 
 static int open_and_attach_perf_event(int freq, struct bpf_program *prog,
-				      struct bpf_link *links[])
+									  struct bpf_link *links[])
 {
 	struct perf_event_attr attr = {
 		.type = PERF_TYPE_SOFTWARE,
@@ -208,23 +219,27 @@ static int open_and_attach_perf_event(int freq, struct bpf_program *prog,
 	};
 	int i, fd;
 
-	for (i = 0; i < nr_cpus; i++) {
+	for (i = 0; i < nr_cpus; i++)
+	{
 		if (env.cpu != -1 && env.cpu != i)
 			continue;
 
 		fd = syscall(__NR_perf_event_open, &attr, -1, i, -1, 0);
-		if (fd < 0) {
+		if (fd < 0)
+		{
 			/* Ignore CPU that is offline */
 			if (errno == ENODEV)
 				continue;
 			fprintf(stderr, "failed to init perf sampling: %s\n",
-				strerror(errno));
+					strerror(errno));
 			return -1;
 		}
 		links[i] = bpf_program__attach_perf_event(prog, fd);
-		if (!links[i]) {
+		if (!links[i])
+		{
 			fprintf(stderr, "failed to attach perf event on cpu: "
-				"%d\n", i);
+							"%d\n",
+					i);
 			links[i] = NULL;
 			close(fd);
 			return -1;
@@ -253,8 +268,8 @@ static int stack_id_err(int stack_id)
 
 static int cmp_counts(const void *dx, const void *dy)
 {
-	__u64 x = ((struct key_ext_t *) dx)->v;
-	__u64 y = ((struct key_ext_t *) dy)->v;
+	__u64 x = ((struct key_ext_t *)dx)->v;
+	__u64 y = ((struct key_ext_t *)dy)->v;
 	return x > y ? -1 : !(x == y);
 }
 
@@ -268,23 +283,26 @@ static bool read_batch_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	__u32 vals[*count];
 	struct key_t keys[*count];
 
-	while (n_read < *count && !err) {
+	while (n_read < *count && !err)
+	{
 		n = *count - n_read;
 		err = bpf_map_lookup_batch(fd, &in, &out, keys + n_read,
-					   vals + n_read, &n, NULL);
-		if (err && errno != ENOENT) {
+								   vals + n_read, &n, NULL);
+		if (err && errno != ENOENT)
+		{
 			/* we want to propagate EINVAL upper, so that
 			 * the batch_map_ops flag is set to false */
 			if (errno != EINVAL)
 				warn("bpf_map_lookup_batch: %s\n",
-				     strerror(-err));
+					 strerror(-err));
 			return false;
 		}
 		n_read += n;
 		in = out;
 	}
 
-	for (i = 0; i < n_read; i++) {
+	for (i = 0; i < n_read; i++)
+	{
 		items[i].k.pid = keys[i].pid;
 		items[i].k.kernel_ip = keys[i].kernel_ip;
 		items[i].k.user_stack_id = keys[i].user_stack_id;
@@ -304,12 +322,16 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	int i = 0;
 	int err;
 
-	if (batch_map_ops) {
+	if (batch_map_ops)
+	{
 		bool ok = read_batch_counts_map(fd, items, count);
-		if (!ok && errno == EINVAL) {
+		if (!ok && errno == EINVAL)
+		{
 			/* fall back to a racy variant */
 			batch_map_ops = false;
-		} else {
+		}
+		else
+		{
 			return ok;
 		}
 	}
@@ -317,10 +339,12 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	if (!items || !count || !*count)
 		return true;
 
-	while (!bpf_map_get_next_key(fd, lookup_key, &items[i].k)) {
+	while (!bpf_map_get_next_key(fd, lookup_key, &items[i].k))
+	{
 
 		err = bpf_map_lookup_elem(fd, &items[i].k, &items[i].v);
-		if (err < 0) {
+		if (err < 0)
+		{
 			fprintf(stderr, "failed to lookup counts: %d\n", err);
 			return false;
 		}
@@ -336,7 +360,7 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 }
 
 static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
-		      struct profile_bpf *obj)
+					  struct profile_bpf *obj)
 {
 	const struct ksym *ksym;
 	const struct syms *syms = NULL;
@@ -356,13 +380,15 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 
 	/* add 1 for kernel_ip */
 	kip = calloc(env.perf_max_stack_depth + 1, sizeof(*kip));
-	if (!kip) {
+	if (!kip)
+	{
 		fprintf(stderr, "failed to alloc kernel ip\n");
 		return;
 	}
 
 	uip = calloc(env.perf_max_stack_depth, sizeof(*uip));
-	if (!uip) {
+	if (!uip)
+	{
 		fprintf(stderr, "failed to alloc user ip\n");
 		return;
 	}
@@ -371,30 +397,36 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 	sfd = bpf_map__fd(obj->maps.stackmap);
 
 	nr_count = MAX_ENTRIES;
-	if (!read_counts_map(cfd, counts, &nr_count)) {
+	if (!read_counts_map(cfd, counts, &nr_count))
+	{
 		goto cleanup;
 	}
 
 	qsort(counts, nr_count, sizeof(counts[0]), cmp_counts);
 
-	for (i = 0; i < nr_count; i++) {
+	for (i = 0; i < nr_count; i++)
+	{
 		k = &counts[i].k;
 		v = counts[i].v;
 		nr_uip = 0;
 		nr_kip = 0;
 		idx = 0;
 
-		if (!env.user_stacks_only && stack_id_err(k->kern_stack_id)) {
+		if (!env.user_stacks_only && stack_id_err(k->kern_stack_id))
+		{
 			missing_stacks += 1;
 			has_collision |= (k->kern_stack_id == -EEXIST);
 		}
-		if (!env.kernel_stacks_only && stack_id_err(k->user_stack_id)) {
+		if (!env.kernel_stacks_only && stack_id_err(k->user_stack_id))
+		{
 			missing_stacks += 1;
 			has_collision |= (k->user_stack_id == -EEXIST);
 		}
 
-		if (!env.kernel_stacks_only && k->user_stack_id >= 0) {
-			if (bpf_map_lookup_elem(sfd, &k->user_stack_id, uip) == 0) {
+		if (!env.kernel_stacks_only && k->user_stack_id >= 0)
+		{
+			if (bpf_map_lookup_elem(sfd, &k->user_stack_id, uip) == 0)
+			{
 				/* count the number of ips */
 				while (uip[nr_uip] && nr_uip < env.perf_max_stack_depth)
 					nr_uip++;
@@ -402,49 +434,61 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 			}
 		}
 
-		if (!env.user_stacks_only && k->kern_stack_id >= 0) {
+		if (!env.user_stacks_only && k->kern_stack_id >= 0)
+		{
 			if (k->kernel_ip)
 				kip[nr_kip++] = k->kernel_ip;
-			if (bpf_map_lookup_elem(sfd, &k->kern_stack_id, kip + nr_kip) == 0) {
+			if (bpf_map_lookup_elem(sfd, &k->kern_stack_id, kip + nr_kip) == 0)
+			{
 				/* count the number of ips */
 				while (kip[nr_kip] && nr_kip < env.perf_max_stack_depth)
 					nr_kip++;
 			}
 		}
 
-		if (env.folded) {
+		if (env.folded)
+		{
 			// print folded stack output
 			printf("%s", k->name);
 
-			if (!env.kernel_stacks_only) {
+			if (!env.kernel_stacks_only)
+			{
 				if (stack_id_err(k->user_stack_id))
 					printf(";[Missed User Stack]");
-				if (syms) {
-					for (j = nr_uip - 1; j >= 0; j--) {
+				if (syms)
+				{
+					for (j = nr_uip - 1; j >= 0; j--)
+					{
 						sym = syms__map_addr(syms, uip[j]);
 						printf(";%s", sym ? sym->name : "[unknown]");
 					}
 				}
 			}
-			if (!env.user_stacks_only) {
+			if (!env.user_stacks_only)
+			{
 				if (env.delimiter && k->user_stack_id >= 0 &&
-				    k->kern_stack_id >= 0)
+					k->kern_stack_id >= 0)
 					printf(";-");
 
 				if (stack_id_err(k->kern_stack_id))
 					printf(";[Missed Kernel Stack]");
-				for (j = nr_kip - 1; j >= 0; j--) {
+				for (j = nr_kip - 1; j >= 0; j--)
+				{
 					ksym = ksyms__map_addr(ksyms, kip[j]);
 					printf(";%s", ksym ? ksym->name : "[unknown]");
 				}
 			}
 			printf(" %lld\n", v);
-		} else {
+		}
+		else
+		{
 			// print default multi-line stack output
-			if (!env.user_stacks_only) {
+			if (!env.user_stacks_only)
+			{
 				if (stack_id_err(k->kern_stack_id))
 					printf("    [Missed Kernel Stack]\n");
-				for (j = 0; j < nr_kip; j++) {
+				for (j = 0; j < nr_kip; j++)
+				{
 					ksym = ksyms__map_addr(ksyms, kip[j]);
 					if (ksym)
 						printf("    #%-2d 0x%lx %s+0x%lx\n", idx++, kip[j], ksym->name, kip[j] - ksym->addr);
@@ -453,18 +497,23 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 				}
 			}
 
-			if (!env.kernel_stacks_only) {
+			if (!env.kernel_stacks_only)
+			{
 				if (env.delimiter && k->kern_stack_id >= 0 &&
-				    k->user_stack_id >= 0)
+					k->user_stack_id >= 0)
 					printf("    --\n");
 
 				if (stack_id_err(k->user_stack_id))
 					printf("    [Missed User Stack]\n");
-				if (!syms) {
+				if (!syms)
+				{
 					for (j = 0; j < nr_uip; j++)
 						printf("    #%-2d 0x%016lx [unknown]\n", idx++, uip[j]);
-				} else {
-					for (j = 0; j < nr_uip; j++) {
+				}
+				else
+				{
+					for (j = 0; j < nr_uip; j++)
+					{
 						char *dso_name;
 						uint64_t dso_offset;
 						sym = syms__map_addr_dso(syms, uip[j], &dso_name, &dso_offset);
@@ -484,17 +533,16 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 		}
 	}
 
-	if (missing_stacks > 0) {
+	if (missing_stacks > 0)
+	{
 		fprintf(stderr, "WARNING: %d stack traces could not be displayed.%s\n",
-			missing_stacks, has_collision ?
-			" Consider increasing --stack-storage-size.":"");
+				missing_stacks, has_collision ? " Consider increasing --stack-storage-size." : "");
 	}
 
 cleanup:
 	free(kip);
 	free(uip);
 }
-
 
 static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
@@ -507,7 +555,7 @@ static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 	printf("%-8s %-7d %-10.3f %s\n",
-	       ts, e->pid, (double)e->time/1000000, e->name);
+		   ts, e->pid, (double)e->time / 1000000, e->name);
 }
 
 static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -521,26 +569,58 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 	char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
 	char *lua_path = "/usr/local/openresty/luajit/lib/libluajit-5.1.so.2.1.0";
 
-	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_cache_load_code");
-	if (func_off < 0) {
+	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_del_thread");
+	if (func_off < 0)
+	{
 		warn("could not find getaddrinfo in %s\n", nginx_path);
 		return -1;
 	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_nginx, false,
-					      -1, nginx_path, func_off);
-	if (!links[0]) {
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
+										  -1, nginx_path, func_off);
+	if (!links[0])
+	{
 		warn("failed to attach getaddrinfo: %d\n", -errno);
 		return -1;
 	}
 
 	func_off = get_elf_func_offset(lua_path, "lua_resume");
-	if (func_off < 0) {
+	if (func_off < 0)
+	{
 		warn("could not find lua_resume in %s\n", lua_path);
 		return -1;
 	}
 	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
-					      -1, lua_path, func_off);
-	if (!links[0]) {
+										  -1, lua_path, func_off);
+	if (!links[0])
+	{
+		warn("failed to attach lua_resume: %d\n", -errno);
+		return -1;
+	}
+
+	func_off = get_elf_func_offset(lua_path, "lua_pcall");
+	if (func_off < 0)
+	{
+		warn("could not find lua_resume in %s\n", lua_path);
+		return -1;
+	}
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
+										  -1, lua_path, func_off);
+	if (!links[0])
+	{
+		warn("failed to attach lua_resume: %d\n", -errno);
+		return -1;
+	}
+
+	func_off = get_elf_func_offset(lua_path, "lua_yield");
+	if (func_off < 0)
+	{
+		warn("could not find lua_resume in %s\n", lua_path);
+		return -1;
+	}
+	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
+										  -1, lua_path, func_off);
+	if (!links[0])
+	{
 		warn("failed to attach lua_resume: %d\n", -errno);
 		return -1;
 	}
@@ -559,14 +639,15 @@ int main(int argc, char **argv)
 	struct bpf_link *links[MAX_CPU_NR] = {};
 	struct profile_bpf *obj;
 	int err, i;
-	char* stack_context = "user + kernel";
+	char *stack_context = "user + kernel";
 	char thread_context[64];
 	char sample_context[64];
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
-	if (env.user_stacks_only && env.kernel_stacks_only) {
+	if (env.user_stacks_only && env.kernel_stacks_only)
+	{
 		fprintf(stderr, "user_stacks_only and kernel_stacks_only cannot be used together.\n");
 		return 1;
 	}
@@ -575,19 +656,22 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	nr_cpus = libbpf_num_possible_cpus();
-	if (nr_cpus < 0) {
+	if (nr_cpus < 0)
+	{
 		printf("failed to get # of possible cpus: '%s'!\n",
-		       strerror(-nr_cpus));
+			   strerror(-nr_cpus));
 		return 1;
 	}
-	if (nr_cpus > MAX_CPU_NR) {
+	if (nr_cpus > MAX_CPU_NR)
+	{
 		fprintf(stderr, "the number of cpu cores is too big, please "
-			"increase MAX_CPU_NR's value and recompile");
+						"increase MAX_CPU_NR's value and recompile");
 		return 1;
 	}
 
 	obj = profile_bpf__open();
-	if (!obj) {
+	if (!obj)
+	{
 		fprintf(stderr, "failed to open BPF object\n");
 		return 1;
 	}
@@ -600,21 +684,24 @@ int main(int argc, char **argv)
 	obj->rodata->include_idle = env.include_idle;
 
 	bpf_map__set_value_size(obj->maps.stackmap,
-				env.perf_max_stack_depth * sizeof(unsigned long));
+							env.perf_max_stack_depth * sizeof(unsigned long));
 	bpf_map__set_max_entries(obj->maps.stackmap, env.stack_storage_size);
 
 	err = profile_bpf__load(obj);
-	if (err) {
+	if (err)
+	{
 		fprintf(stderr, "failed to load BPF programs\n");
 		goto cleanup;
 	}
 	ksyms = ksyms__load();
-	if (!ksyms) {
+	if (!ksyms)
+	{
 		fprintf(stderr, "failed to load kallsyms\n");
 		goto cleanup;
 	}
 	syms_cache = syms_cache__new(0);
-	if (!syms_cache) {
+	if (!syms_cache)
+	{
 		fprintf(stderr, "failed to create syms_cache\n");
 		goto cleanup;
 	}
@@ -624,8 +711,9 @@ int main(int argc, char **argv)
 		goto cleanup;
 
 	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.events_nginx), PERF_BUFFER_PAGES,
-			      handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
-	if (!pb) {
+											  handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
+	if (!pb)
+	{
 		err = -errno;
 		warn("failed to open perf buffer: %d\n", err);
 		goto cleanup;
@@ -657,7 +745,8 @@ int main(int argc, char **argv)
 	else if (env.kernel_stacks_only)
 		stack_context = "kernel";
 
-	if (!env.folded) {
+	if (!env.folded)
+	{
 		printf("Sampling at %s of %s by %s stack", sample_context, thread_context, stack_context);
 		if (env.cpu != -1)
 			printf(" on CPU#%d", env.cpu);
@@ -671,10 +760,12 @@ int main(int argc, char **argv)
 	 * We'll get sleep interrupted when someone presses Ctrl-C (which will
 	 * be "handled" with noop by sig_handler).
 	 */
-	//sleep(env.duration);
-	while (!exiting) {
+	// sleep(env.duration);
+	while (!exiting)
+	{
 		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
-		if (err < 0 && err != -EINTR) {
+		if (err < 0 && err != -EINTR)
+		{
 			warn("error polling perf buffer: %s\n", strerror(-err));
 			goto cleanup;
 		}
@@ -687,7 +778,8 @@ int main(int argc, char **argv)
 cleanup:
 	if (env.cpu != -1)
 		bpf_link__destroy(links[env.cpu]);
-	else {
+	else
+	{
 		for (i = 0; i < nr_cpus; i++)
 			bpf_link__destroy(links[i]);
 	}

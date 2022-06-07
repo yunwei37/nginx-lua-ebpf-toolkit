@@ -85,6 +85,13 @@ typedef LUA_NUMBER lua_Number;
 #define LJ_ENDIAN_LOHI(lo, hi) lo hi
 #endif
 
+/* Frame link. */
+typedef union {
+  int32_t ftsz;		/* Frame type and size of previous frame. */
+  MRef pcr;		/* Or PC for Lua frames. */
+} FrameLink;
+
+
 /* Tagged value. */
 typedef LJ_ALIGN(8) union TValue
 {
@@ -446,7 +453,7 @@ typedef struct GCproto {
 #define proto_bcpos(pt, pc)	((BCPos)((pc) - proto_bc(pt)))
 #define proto_uv(pt)		(mref((pt)->uv, uint16_t))
 
-//#define proto_chunkname(pt)	(strref((pt)->chunkname))
+#define proto_chunkname(pt)	(strref(BPF_PROBE_READ_USER(pt, chunkname)))
 
 #define proto_chunknamestr(pt)	(strdata(proto_chunkname((pt))))
 #define proto_lineinfo(pt)	(mref((pt)->lineinfo, const void))
@@ -623,13 +630,7 @@ enum
 **                  ^-- frame            | ^-- base   ^-- top
 */
 #define frame_gc(f) (gcval((f)-1))
-//#define frame_ftsz(f) ((ptrdiff_t)(f)->ftsz)
-
-static __always_inline bool frame_ftsz(cTValue *frame) {
-	ptrdiff_t ftsz;
-	bpf_probe_read_user(&ftsz, sizeof(ftsz), &frame->ftsz);
-	return ftsz;
-}
+#define frame_ftsz(f) ((ptrdiff_t)BPF_PROBE_READ_USER(frame, ftsz))
 
 #define frame_pc(f) ((const BCIns *)frame_ftsz(f))
 #define setframe_ftsz(f, sz) ((f)->ftsz = (sz))
@@ -650,7 +651,8 @@ static __always_inline bool frame_ftsz(cTValue *frame) {
 **             ^-- frame            | ^-- base   ^-- top
 */
 #define frame_gc(f) (gcref((f)->fr.func))
-#define frame_ftsz(f) ((ptrdiff_t)(f)->fr.tp.ftsz)
+#define frame_ftsz(f) ((ptrdiff_t)BPF_PROBE_READ_USER(f, fr.tp.ftsz))
+
 #define frame_pc(f) (mref((f)->fr.tp.pcr, const BCIns))
 #define setframe_gc(f, p, tp) (setgcref((f)->fr.func, (p)), UNUSED(tp))
 #define setframe_ftsz(f, sz) ((f)->fr.tp.ftsz = (int32_t)(sz))
@@ -697,12 +699,12 @@ static __always_inline BCIns frame_pc_prev(const BCIns *bcins) {
 
 #define strref(r)	(&gcref((r))->str)
 
-static __always_inline GCstr *proto_chunkname(GCproto *pt)
-{ 
-  GCRef chunkname;
-  bpf_probe_read_user(&chunkname, sizeof(GCRef), &pt->chunkname);
-  return strref(chunkname);
-}
+// static __always_inline GCstr *proto_chunkname(GCproto *pt)
+// { 
+//   GCRef chunkname;
+//   bpf_probe_read_user(&chunkname, sizeof(GCRef), &pt->chunkname);
+//   return strref(chunkname);
+// }
 
 
 #endif
