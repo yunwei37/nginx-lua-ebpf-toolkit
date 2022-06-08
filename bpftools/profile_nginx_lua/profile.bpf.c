@@ -67,15 +67,15 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
-	bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+	//bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 	/* Traverse frames backwards. */
 	for (; i < 10 && frame > bot; i++)
 	{
-		bpf_printk("loop %d\n", i);
-		bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+		// bpf_printk("loop %d\n", i);
+		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 		if (frame_gc(frame) == obj2gco(L))
 		{
-			bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
+			//bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
 			level++; /* Skip dummy frames. See lj_err_optype_call(). */
 		}
 		if (level-- == 0)
@@ -83,7 +83,7 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 			*size = (nextframe - frame);
 			//size_t i_ci = (size << 16) + (frame - bot) / sizeof(TValue);
 			bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-			bpf_printk("size=%d, frame=%p\n", size, frame);
+			//bpf_printk("size=%d, frame=%p\n", size, frame);
 			return frame; /* Level found. */
 		}
 		nextframe = frame;
@@ -98,7 +98,7 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 			frame = frame_prevd(frame);
 		}
 	}
-	bpf_printk("Level not found\n");
+	//bpf_printk("Level not found\n");
 	*size = level;
 	return NULL; /* Level not found. */
 }
@@ -174,28 +174,46 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	cTValue *frame = NULL;
 	int size;
 	frame = BPF_PROBE_READ_USER(L, base);
-	bpf_printk("perf get lua_state %p", L);
-	bpf_printk("L->status %d", BPF_PROBE_READ_USER(L, status));
-	bpf_printk("L->base %p. is lua %d, is varg %d", frame, frame_islua(frame), frame_isvarg(frame));
-	bpf_printk("L->stack %p", tvref(BPF_PROBE_READ_USER(L, stack)));
-	bpf_printk("L->stacksize %x", BPF_PROBE_READ_USER(L, stacksize));
-	bpf_printk("L->top %p", BPF_PROBE_READ_USER(L, top));
-	bpf_printk("L max stack %p.", tvref(BPF_PROBE_READ_USER(L, maxstack)));
-	bpf_printk("prevd frame %p.", frame_prevd(frame));
-	bpf_printk("prevl frame %p.\n", frame_prevl(frame));
+	// bpf_printk("perf get lua_state %p", L);
+	// bpf_printk("L->status %d", BPF_PROBE_READ_USER(L, status));
+	// bpf_printk("L->base %p. is lua %d, is varg %d", frame, frame_islua(frame), frame_isvarg(frame));
+	// bpf_printk("L->stack %p", tvref(BPF_PROBE_READ_USER(L, stack)));
+	// bpf_printk("L->stacksize %x", BPF_PROBE_READ_USER(L, stacksize));
+	// bpf_printk("L->top %p", BPF_PROBE_READ_USER(L, top));
+	// bpf_printk("L max stack %p.", tvref(BPF_PROBE_READ_USER(L, maxstack)));
+	// bpf_printk("prevd frame %p.", frame_prevd(frame));
+	// bpf_printk("prevl frame %p.\n", frame_prevl(frame));
 
-	frame = lj_debug_frame(L, 1, &size);
-	//bpf_printk("size=%d\n", size);
-	//lua_getinfo(L, i_ci);
-	GCfunc *fn = frame_func(frame);
-	bpf_printk("GCfunc %p\n", fn);
-	GCproto *pt = funcproto(fn);
-	bpf_printk("GCproto %p\n", pt);
-	GCstr *name = proto_chunkname(pt); /* GCstr *name */
-	const char *src = strdata(name);
-	char* fn_name[16];
-	bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
-	bpf_printk("fn_name=%s\n", src);
+	for (int i = 1; i < 15; ++i) {
+		frame = lj_debug_frame(L, i, &size);
+		if (!frame)
+			continue;
+		GCfunc *fn = frame_func(frame);
+		if (!fn)
+			continue;
+		GCproto *pt = funcproto(fn);
+		if (!pt)
+			continue;
+		GCstr *name = proto_chunkname(pt); /* GCstr *name */
+		const char *src = strdata(name);
+		if (!src)
+			continue;
+		char* fn_name[16];
+		bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
+		bpf_printk("level= %d, fn_name=%s\n", i, src);
+	}
+	// frame = lj_debug_frame(L, 1, &size);
+	// //bpf_printk("size=%d\n", size);
+	// //lua_getinfo(L, i_ci);
+	// GCfunc *fn = frame_func(frame);
+	// bpf_printk("GCfunc %p\n", fn);
+	// GCproto *pt = funcproto(fn);
+	// bpf_printk("GCproto %p\n", pt);
+	// GCstr *name = proto_chunkname(pt); /* GCstr *name */
+	// const char *src = strdata(name);
+	// char* fn_name[16];
+	// bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
+	// bpf_printk("fn_name=%s\n", src);
 	return 0;
 }
 
