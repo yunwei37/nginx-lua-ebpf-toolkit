@@ -461,7 +461,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					printf(";[Missed User Stack]");
 				if (syms)
 				{
-					int count = 0;
+					int count = lua_bt.level_size - 1;
 					for (j = nr_uip - 1; j >= 0; j--)
 					{
 						sym = syms__map_addr(syms, uip[j]);
@@ -471,13 +471,13 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 						}
 						else
 						{
-							if (count < lua_bt.level_size)
+							if (count >= 0)
 							{
-								printf(";%s", lua_bt.stack[count++].name);
+								printf(";%s", lua_bt.stack[count--].name);
 							}
 							else if (lua_bt.level_size == 0)
 							{
-								printf(";[unknown]");
+								//printf(";[unknown]");
 							}
 						}
 					}

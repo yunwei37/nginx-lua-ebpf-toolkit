@@ -1,0 +1,1556 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="262" onload="init(evt)" viewBox="0 0 1200 262" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				clearzoom();
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="262.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="245" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="245" > </text>
+<g id="frames">
+<g >
+<title>lj_cf_table_clear (1 samples, 0.16%)</title><rect x="237.6" y="133" width="1.9" height="15.0" fill="rgb(220,153,47)" rx="2" ry="2" />
+<text  x="240.59" y="143.5" ></text>
+</g>
+<g >
+<title>lj_BC_CALL (1 samples, 0.16%)</title><rect x="214.6" y="53" width="1.9" height="15.0" fill="rgb(239,139,7)" rx="2" ry="2" />
+<text  x="217.64" y="63.5" ></text>
+</g>
+<g >
+<title>ngx_writev (3 samples, 0.49%)</title><rect x="1096.3" y="181" width="5.7" height="15.0" fill="rgb(229,65,15)" rx="2" ry="2" />
+<text  x="1099.29" y="191.5" ></text>
+</g>
+<g >
+<title>__nss_database_lookup (3 samples, 0.49%)</title><rect x="520.6" y="165" width="5.8" height="15.0" fill="rgb(243,140,37)" rx="2" ry="2" />
+<text  x="523.63" y="175.5" ></text>
+</g>
+<g >
+<title>snap_restoreval (1 samples, 0.16%)</title><rect x="608.6" y="165" width="1.9" height="15.0" fill="rgb(215,207,32)" rx="2" ry="2" />
+<text  x="611.61" y="175.5" ></text>
+</g>
+<g >
+<title>lj_BC_MOV (2 samples, 0.32%)</title><rect x="731.0" y="181" width="3.8" height="15.0" fill="rgb(205,48,10)" rx="2" ry="2" />
+<text  x="734.00" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_JLOOP (1 samples, 0.16%)</title><rect x="126.7" y="69" width="1.9" height="15.0" fill="rgb(238,134,6)" rx="2" ry="2" />
+<text  x="129.66" y="79.5" ></text>
+</g>
+<g >
+<title>gettimeofday (1 samples, 0.16%)</title><rect x="696.6" y="181" width="1.9" height="15.0" fill="rgb(246,192,27)" rx="2" ry="2" />
+<text  x="699.58" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TSETS (4 samples, 0.65%)</title><rect x="474.7" y="117" width="7.7" height="15.0" fill="rgb(242,126,49)" rx="2" ry="2" />
+<text  x="477.73" y="127.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/init.lua (5 samples, 0.81%)</title><rect x="637.3" y="181" width="9.6" height="15.0" fill="rgb(230,229,19)" rx="2" ry="2" />
+<text  x="640.29" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_parse_url (2 samples, 0.32%)</title><rect x="1052.3" y="181" width="3.8" height="15.0" fill="rgb(247,22,35)" rx="2" ry="2" />
+<text  x="1055.30" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="205.1" y="149" width="1.9" height="15.0" fill="rgb(224,120,19)" rx="2" ry="2" />
+<text  x="208.07" y="159.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="126.7" y="85" width="1.9" height="15.0" fill="rgb(207,11,18)" rx="2" ry="2" />
+<text  x="129.66" y="95.5" ></text>
+</g>
+<g >
+<title>luaL_pushresult (1 samples, 0.16%)</title><rect x="790.3" y="181" width="1.9" height="15.0" fill="rgb(225,66,4)" rx="2" ry="2" />
+<text  x="793.29" y="191.5" ></text>
+</g>
+<g >
+<title>lj_tab_free (1 samples, 0.16%)</title><rect x="369.5" y="37" width="2.0" height="15.0" fill="rgb(224,30,45)" rx="2" ry="2" />
+<text  x="372.55" y="47.5" ></text>
+</g>
+<g >
+<title>gc_sweep (1 samples, 0.16%)</title><rect x="623.9" y="165" width="1.9" height="15.0" fill="rgb(248,86,53)" rx="2" ry="2" />
+<text  x="626.91" y="175.5" ></text>
+</g>
+<g >
+<title>match.part.0 (3 samples, 0.49%)</title><rect x="509.2" y="149" width="5.7" height="15.0" fill="rgb(222,19,29)" rx="2" ry="2" />
+<text  x="512.16" y="159.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="165" width="1.9" height="15.0" fill="rgb(230,173,0)" rx="2" ry="2" />
+<text  x="653.68" y="175.5" ></text>
+</g>
+<g >
+<title>propagatemark (2 samples, 0.32%)</title><rect x="627.7" y="165" width="3.9" height="15.0" fill="rgb(207,177,18)" rx="2" ry="2" />
+<text  x="630.73" y="175.5" ></text>
+</g>
+<g >
+<title>pcre_exec (2 samples, 0.32%)</title><rect x="111.4" y="117" width="3.8" height="15.0" fill="rgb(241,95,5)" rx="2" ry="2" />
+<text  x="114.36" y="127.5" ></text>
+</g>
+<g >
+<title>lj_str_new (1 samples, 0.16%)</title><rect x="402.1" y="53" width="1.9" height="15.0" fill="rgb(239,112,23)" rx="2" ry="2" />
+<text  x="405.06" y="63.5" ></text>
+</g>
+<g >
+<title>ngx_http_limit_conn_handler (1 samples, 0.16%)</title><rect x="931.8" y="181" width="1.9" height="15.0" fill="rgb(209,105,9)" rx="2" ry="2" />
+<text  x="934.82" y="191.5" ></text>
+</g>
+<g >
+<title>lj_tab_clear (1 samples, 0.16%)</title><rect x="625.8" y="165" width="1.9" height="15.0" fill="rgb(248,132,34)" rx="2" ry="2" />
+<text  x="628.82" y="175.5" ></text>
+</g>
+<g >
+<title>newtab (1 samples, 0.16%)</title><rect x="583.7" y="165" width="2.0" height="15.0" fill="rgb(230,40,26)" rx="2" ry="2" />
+<text  x="586.74" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (1 samples, 0.16%)</title><rect x="644.9" y="149" width="2.0" height="15.0" fill="rgb(206,48,24)" rx="2" ry="2" />
+<text  x="647.94" y="159.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_body_filter (3 samples, 0.49%)</title><rect x="960.5" y="181" width="5.7" height="15.0" fill="rgb(213,87,22)" rx="2" ry="2" />
+<text  x="963.50" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_send_request (1 samples, 0.16%)</title><rect x="1042.7" y="165" width="2.0" height="15.0" fill="rgb(215,161,26)" rx="2" ry="2" />
+<text  x="1045.74" y="175.5" ></text>
+</g>
+<g >
+<title>connect (1 samples, 0.16%)</title><rect x="671.7" y="181" width="1.9" height="15.0" fill="rgb(208,58,5)" rx="2" ry="2" />
+<text  x="674.72" y="191.5" ></text>
+</g>
+<g >
+<title>gc_sweep (1 samples, 0.16%)</title><rect x="360.0" y="37" width="1.9" height="15.0" fill="rgb(241,98,33)" rx="2" ry="2" />
+<text  x="362.98" y="47.5" ></text>
+</g>
+<g >
+<title>lj_strfmt_obj (1 samples, 0.16%)</title><rect x="482.4" y="133" width="1.9" height="15.0" fill="rgb(211,79,2)" rx="2" ry="2" />
+<text  x="485.38" y="143.5" ></text>
+</g>
+<g >
+<title>lj_BC_CALL (1 samples, 0.16%)</title><rect x="493.9" y="149" width="1.9" height="15.0" fill="rgb(246,196,20)" rx="2" ry="2" />
+<text  x="496.86" y="159.5" ></text>
+</g>
+<g >
+<title>json_decode (1 samples, 0.16%)</title><rect x="361.9" y="37" width="1.9" height="15.0" fill="rgb(214,176,17)" rx="2" ry="2" />
+<text  x="364.90" y="47.5" ></text>
+</g>
+<g >
+<title>ngx_http_keepalive_handler (6 samples, 0.97%)</title><rect x="920.3" y="181" width="11.5" height="15.0" fill="rgb(207,227,7)" rx="2" ry="2" />
+<text  x="923.34" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_encode_base64 (3 samples, 0.49%)</title><rect x="597.1" y="165" width="5.8" height="15.0" fill="rgb(240,39,25)" rx="2" ry="2" />
+<text  x="600.13" y="175.5" ></text>
+</g>
+<g >
+<title>lj_str_new (1 samples, 0.16%)</title><rect x="117.1" y="133" width="1.9" height="15.0" fill="rgb(238,20,42)" rx="2" ry="2" />
+<text  x="120.10" y="143.5" ></text>
+</g>
+<g >
+<title>lj_BC_JLOOP (2 samples, 0.32%)</title><rect x="535.9" y="165" width="3.9" height="15.0" fill="rgb(224,127,21)" rx="2" ry="2" />
+<text  x="538.93" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_auth_basic_user (1 samples, 0.16%)</title><rect x="905.0" y="181" width="2.0" height="15.0" fill="rgb(240,63,37)" rx="2" ry="2" />
+<text  x="908.04" y="191.5" ></text>
+</g>
+<g >
+<title>lua_resume (6 samples, 0.97%)</title><rect x="840.0" y="181" width="11.5" height="15.0" fill="rgb(246,31,2)" rx="2" ry="2" />
+<text  x="843.02" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugin.lua (1 samples, 0.16%)</title><rect x="644.9" y="165" width="2.0" height="15.0" fill="rgb(252,155,18)" rx="2" ry="2" />
+<text  x="647.94" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugin.lua (3 samples, 0.49%)</title><rect x="207.0" y="117" width="5.7" height="15.0" fill="rgb(249,0,35)" rx="2" ry="2" />
+<text  x="209.99" y="127.5" ></text>
+</g>
+<g >
+<title>swapcontext (3 samples, 0.49%)</title><rect x="614.3" y="133" width="5.8" height="15.0" fill="rgb(223,78,20)" rx="2" ry="2" />
+<text  x="617.34" y="143.5" ></text>
+</g>
+<g >
+<title>ngx_http_set_header_helper (1 samples, 0.16%)</title><rect x="604.8" y="165" width="1.9" height="15.0" fill="rgb(249,195,23)" rx="2" ry="2" />
+<text  x="607.78" y="175.5" ></text>
+</g>
+<g >
+<title>lj_tab_next (1 samples, 0.16%)</title><rect x="574.2" y="165" width="1.9" height="15.0" fill="rgb(219,61,54)" rx="2" ry="2" />
+<text  x="577.18" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/http/route.lua (14 samples, 2.27%)</title><rect x="212.7" y="149" width="26.8" height="15.0" fill="rgb(206,9,40)" rx="2" ry="2" />
+<text  x="215.72" y="159.5" >@..</text>
+</g>
+<g >
+<title>psiginfo (7 samples, 1.13%)</title><rect x="610.5" y="149" width="13.4" height="15.0" fill="rgb(240,30,32)" rx="2" ry="2" />
+<text  x="613.52" y="159.5" ></text>
+</g>
+<g >
+<title>ngx_http_script_var_code (2 samples, 0.32%)</title><rect x="1016.0" y="181" width="3.8" height="15.0" fill="rgb(211,218,47)" rx="2" ry="2" />
+<text  x="1018.96" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="214.6" y="69" width="1.9" height="15.0" fill="rgb(251,147,7)" rx="2" ry="2" />
+<text  x="217.64" y="79.5" ></text>
+</g>
+<g >
+<title>lj_meta_tget (1 samples, 0.16%)</title><rect x="780.7" y="181" width="1.9" height="15.0" fill="rgb(208,34,4)" rx="2" ry="2" />
+<text  x="783.73" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_shdict_store (2 samples, 0.32%)</title><rect x="985.4" y="181" width="3.8" height="15.0" fill="rgb(239,169,32)" rx="2" ry="2" />
+<text  x="988.36" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (1 samples, 0.16%)</title><rect x="205.1" y="85" width="1.9" height="15.0" fill="rgb(208,213,45)" rx="2" ry="2" />
+<text  x="208.07" y="95.5" ></text>
+</g>
+<g >
+<title>lj_meta_call (2 samples, 0.32%)</title><rect x="233.8" y="117" width="3.8" height="15.0" fill="rgb(244,7,19)" rx="2" ry="2" />
+<text  x="236.76" y="127.5" ></text>
+</g>
+<g >
+<title>lj_tab_new (1 samples, 0.16%)</title><rect x="786.5" y="181" width="1.9" height="15.0" fill="rgb(254,141,4)" rx="2" ry="2" />
+<text  x="789.47" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TSETS (1 samples, 0.16%)</title><rect x="103.7" y="37" width="1.9" height="15.0" fill="rgb(207,181,32)" rx="2" ry="2" />
+<text  x="106.71" y="47.5" ></text>
+</g>
+<g >
+<title>lj_BC_ISNEP (1 samples, 0.16%)</title><rect x="715.7" y="181" width="1.9" height="15.0" fill="rgb(213,19,33)" rx="2" ry="2" />
+<text  x="718.71" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_proxy_process_status_line (2 samples, 0.32%)</title><rect x="1004.5" y="181" width="3.8" height="15.0" fill="rgb(249,45,24)" rx="2" ry="2" />
+<text  x="1007.49" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_send_request_handler (1 samples, 0.16%)</title><rect x="1042.7" y="181" width="2.0" height="15.0" fill="rgb(242,13,4)" rx="2" ry="2" />
+<text  x="1045.74" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_script_copy_var_code (1 samples, 0.16%)</title><rect x="1012.1" y="181" width="2.0" height="15.0" fill="rgb(254,101,19)" rx="2" ry="2" />
+<text  x="1015.14" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/core/log.lua (1 samples, 0.16%)</title><rect x="205.1" y="117" width="1.9" height="15.0" fill="rgb(210,148,36)" rx="2" ry="2" />
+<text  x="208.07" y="127.5" ></text>
+</g>
+<g >
+<title>pthread_attr_setschedparam (3 samples, 0.49%)</title><rect x="1151.8" y="181" width="5.7" height="15.0" fill="rgb(232,43,7)" rx="2" ry="2" />
+<text  x="1154.75" y="191.5" ></text>
+</g>
+<g >
+<title>lua_rawseti (1 samples, 0.16%)</title><rect x="832.4" y="181" width="1.9" height="15.0" fill="rgb(250,18,14)" rx="2" ry="2" />
+<text  x="835.37" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_process_header (2 samples, 0.32%)</title><rect x="1023.6" y="165" width="3.8" height="15.0" fill="rgb(209,186,53)" rx="2" ry="2" />
+<text  x="1026.61" y="175.5" ></text>
+</g>
+<g >
+<title> (19 samples, 3.08%)</title><rect x="103.7" y="181" width="36.3" height="15.0" fill="rgb(228,155,9)" rx="2" ry="2" />
+<text  x="106.71" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="53" width="1.9" height="15.0" fill="rgb(237,44,37)" rx="2" ry="2" />
+<text  x="653.68" y="63.5" ></text>
+</g>
+<g >
+<title>ngx_http_copy_filter (1 samples, 0.16%)</title><rect x="907.0" y="181" width="1.9" height="15.0" fill="rgb(233,113,12)" rx="2" ry="2" />
+<text  x="909.95" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_unix_recv (1 samples, 0.16%)</title><rect x="1035.1" y="165" width="1.9" height="15.0" fill="rgb(247,173,44)" rx="2" ry="2" />
+<text  x="1038.09" y="175.5" ></text>
+</g>
+<g >
+<title>nd_mul2k (13 samples, 2.11%)</title><rect x="853.4" y="181" width="24.9" height="15.0" fill="rgb(209,42,27)" rx="2" ry="2" />
+<text  x="856.40" y="191.5" >n..</text>
+</g>
+<g >
+<title>lj_BC_JLOOP (3 samples, 0.49%)</title><rect x="499.6" y="149" width="5.7" height="15.0" fill="rgb(211,216,20)" rx="2" ry="2" />
+<text  x="502.59" y="159.5" ></text>
+</g>
+<g >
+<title> (2 samples, 0.32%)</title><rect x="126.7" y="101" width="3.8" height="15.0" fill="rgb(243,79,3)" rx="2" ry="2" />
+<text  x="129.66" y="111.5" ></text>
+</g>
+<g >
+<title>close (1 samples, 0.16%)</title><rect x="669.8" y="181" width="1.9" height="15.0" fill="rgb(220,142,23)" rx="2" ry="2" />
+<text  x="672.81" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (2 samples, 0.32%)</title><rect x="646.9" y="117" width="3.8" height="15.0" fill="rgb(238,59,24)" rx="2" ry="2" />
+<text  x="649.86" y="127.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (2 samples, 0.32%)</title><rect x="646.9" y="133" width="3.8" height="15.0" fill="rgb(252,159,7)" rx="2" ry="2" />
+<text  x="649.86" y="143.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="117" width="1.9" height="15.0" fill="rgb(232,2,7)" rx="2" ry="2" />
+<text  x="653.68" y="127.5" ></text>
+</g>
+<g >
+<title>ngx_handle_read_event (1 samples, 0.16%)</title><rect x="885.9" y="181" width="1.9" height="15.0" fill="rgb(207,170,8)" rx="2" ry="2" />
+<text  x="888.92" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_CALL (1 samples, 0.16%)</title><rect x="534.0" y="165" width="1.9" height="15.0" fill="rgb(237,175,43)" rx="2" ry="2" />
+<text  x="537.02" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_hash_find (4 samples, 0.65%)</title><rect x="887.8" y="181" width="7.7" height="15.0" fill="rgb(242,138,33)" rx="2" ry="2" />
+<text  x="890.83" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (1 samples, 0.16%)</title><rect x="539.8" y="165" width="1.9" height="15.0" fill="rgb(235,160,41)" rx="2" ry="2" />
+<text  x="542.76" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt-validators.lu (2 samples, 0.32%)</title><rect x="646.9" y="101" width="3.8" height="15.0" fill="rgb(223,82,8)" rx="2" ry="2" />
+<text  x="649.86" y="111.5" ></text>
+</g>
+<g >
+<title>_init (1 samples, 0.16%)</title><rect x="666.0" y="181" width="1.9" height="15.0" fill="rgb(250,103,29)" rx="2" ry="2" />
+<text  x="668.98" y="191.5" ></text>
+</g>
+<g >
+<title>lj_tab_newkey (1 samples, 0.16%)</title><rect x="572.3" y="165" width="1.9" height="15.0" fill="rgb(230,145,50)" rx="2" ry="2" />
+<text  x="575.27" y="175.5" ></text>
+</g>
+<g >
+<title>lj_vm_exit_interp (1 samples, 0.16%)</title><rect x="644.9" y="37" width="2.0" height="15.0" fill="rgb(217,186,3)" rx="2" ry="2" />
+<text  x="647.94" y="47.5" ></text>
+</g>
+<g >
+<title>=access_by_lua(nginx.conf:268) (253 samples, 41.00%)</title><rect x="140.0" y="181" width="483.9" height="15.0" fill="rgb(239,25,49)" rx="2" ry="2" />
+<text  x="143.05" y="191.5" >=access_by_lua(nginx.conf:268)</text>
+</g>
+<g >
+<title>lj_alloc_free (7 samples, 1.13%)</title><rect x="748.2" y="181" width="13.4" height="15.0" fill="rgb(245,104,51)" rx="2" ry="2" />
+<text  x="751.22" y="191.5" ></text>
+</g>
+<g >
+<title>recv (6 samples, 0.97%)</title><rect x="1157.5" y="181" width="11.5" height="15.0" fill="rgb(252,98,13)" rx="2" ry="2" />
+<text  x="1160.49" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (3 samples, 0.49%)</title><rect x="207.0" y="85" width="5.7" height="15.0" fill="rgb(253,157,36)" rx="2" ry="2" />
+<text  x="209.99" y="95.5" ></text>
+</g>
+<g >
+<title> (6 samples, 0.97%)</title><rect x="103.7" y="133" width="11.5" height="15.0" fill="rgb(231,48,4)" rx="2" ry="2" />
+<text  x="106.71" y="143.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (127 samples, 20.58%)</title><rect x="239.5" y="133" width="242.9" height="15.0" fill="rgb(215,33,33)" rx="2" ry="2" />
+<text  x="242.50" y="143.5" >@/home/yunwei/coding/backlog/api..</text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="133" width="1.9" height="15.0" fill="rgb(219,0,3)" rx="2" ry="2" />
+<text  x="653.68" y="143.5" ></text>
+</g>
+<g >
+<title>lua_tolstring (1 samples, 0.16%)</title><rect x="851.5" y="181" width="1.9" height="15.0" fill="rgb(247,205,33)" rx="2" ry="2" />
+<text  x="854.49" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (3 samples, 0.49%)</title><rect x="738.7" y="181" width="5.7" height="15.0" fill="rgb(234,88,13)" rx="2" ry="2" />
+<text  x="741.65" y="191.5" ></text>
+</g>
+<g >
+<title>luaL_checklstring (1 samples, 0.16%)</title><rect x="404.0" y="53" width="1.9" height="15.0" fill="rgb(222,104,52)" rx="2" ry="2" />
+<text  x="406.97" y="63.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_finalize_request (1 samples, 0.16%)</title><rect x="1037.0" y="181" width="1.9" height="15.0" fill="rgb(205,36,38)" rx="2" ry="2" />
+<text  x="1040.00" y="191.5" ></text>
+</g>
+<g >
+<title>json_next_token (1 samples, 0.16%)</title><rect x="363.8" y="37" width="1.9" height="15.0" fill="rgb(222,196,43)" rx="2" ry="2" />
+<text  x="366.81" y="47.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (1 samples, 0.16%)</title><rect x="643.0" y="149" width="1.9" height="15.0" fill="rgb(239,24,31)" rx="2" ry="2" />
+<text  x="646.03" y="159.5" ></text>
+</g>
+<g >
+<title>all (617 samples, 100%)</title><rect x="10.0" y="213" width="1180.0" height="15.0" fill="rgb(213,119,38)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>lj_tab_len (1 samples, 0.16%)</title><rect x="784.6" y="181" width="1.9" height="15.0" fill="rgb(221,217,35)" rx="2" ry="2" />
+<text  x="787.55" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_FUNCC (1 samples, 0.16%)</title><rect x="400.1" y="53" width="2.0" height="15.0" fill="rgb(254,133,34)" rx="2" ry="2" />
+<text  x="403.15" y="63.5" ></text>
+</g>
+<g >
+<title>json_append_number (1 samples, 0.16%)</title><rect x="491.9" y="149" width="2.0" height="15.0" fill="rgb(233,65,3)" rx="2" ry="2" />
+<text  x="494.94" y="159.5" ></text>
+</g>
+<g >
+<title>lj_func_free (1 samples, 0.16%)</title><rect x="778.8" y="181" width="1.9" height="15.0" fill="rgb(212,7,53)" rx="2" ry="2" />
+<text  x="781.82" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_set_ctx_ref (1 samples, 0.16%)</title><rect x="602.9" y="165" width="1.9" height="15.0" fill="rgb(234,25,47)" rx="2" ry="2" />
+<text  x="605.87" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_shdict_incr (1 samples, 0.16%)</title><rect x="983.5" y="181" width="1.9" height="15.0" fill="rgb(243,26,3)" rx="2" ry="2" />
+<text  x="986.45" y="191.5" ></text>
+</g>
+<g >
+<title>hashkey (2 samples, 0.32%)</title><rect x="704.2" y="181" width="3.9" height="15.0" fill="rgb(242,28,40)" rx="2" ry="2" />
+<text  x="707.23" y="191.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.16%)</title><rect x="239.5" y="69" width="1.9" height="15.0" fill="rgb(215,69,52)" rx="2" ry="2" />
+<text  x="242.50" y="79.5" ></text>
+</g>
+<g >
+<title> (2 samples, 0.32%)</title><rect x="126.7" y="133" width="3.8" height="15.0" fill="rgb(252,32,42)" rx="2" ry="2" />
+<text  x="129.66" y="143.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (2 samples, 0.32%)</title><rect x="646.9" y="165" width="3.8" height="15.0" fill="rgb(215,27,8)" rx="2" ry="2" />
+<text  x="649.86" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (1 samples, 0.16%)</title><rect x="216.5" y="101" width="2.0" height="15.0" fill="rgb(210,212,54)" rx="2" ry="2" />
+<text  x="219.55" y="111.5" ></text>
+</g>
+<g >
+<title>lj_BC_JFUNCF (3 samples, 0.49%)</title><rect x="719.5" y="181" width="5.8" height="15.0" fill="rgb(221,121,34)" rx="2" ry="2" />
+<text  x="722.53" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (19 samples, 3.08%)</title><rect x="425.0" y="85" width="36.3" height="15.0" fill="rgb(231,106,30)" rx="2" ry="2" />
+<text  x="428.01" y="95.5" >@/h..</text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="214.6" y="85" width="1.9" height="15.0" fill="rgb(233,198,45)" rx="2" ry="2" />
+<text  x="217.64" y="95.5" ></text>
+</g>
+<g >
+<title>ngx_pnalloc (2 samples, 0.32%)</title><rect x="1056.1" y="181" width="3.9" height="15.0" fill="rgb(209,125,3)" rx="2" ry="2" />
+<text  x="1059.13" y="191.5" ></text>
+</g>
+<g >
+<title>gc_sweepstr (2 samples, 0.32%)</title><rect x="683.2" y="181" width="3.8" height="15.0" fill="rgb(209,59,41)" rx="2" ry="2" />
+<text  x="686.19" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_attr_setschedparam (1 samples, 0.16%)</title><rect x="631.6" y="165" width="1.9" height="15.0" fill="rgb(205,160,52)" rx="2" ry="2" />
+<text  x="634.56" y="175.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (1 samples, 0.16%)</title><rect x="650.7" y="37" width="1.9" height="15.0" fill="rgb(214,100,5)" rx="2" ry="2" />
+<text  x="653.68" y="47.5" ></text>
+</g>
+<g >
+<title>openresty (617 samples, 100.00%)</title><rect x="10.0" y="197" width="1180.0" height="15.0" fill="rgb(226,177,21)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >openresty</text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/http/route.lua (1 samples, 0.16%)</title><rect x="643.0" y="165" width="1.9" height="15.0" fill="rgb(207,77,13)" rx="2" ry="2" />
+<text  x="646.03" y="175.5" ></text>
+</g>
+<g >
+<title> (9 samples, 1.46%)</title><rect x="103.7" y="149" width="17.2" height="15.0" fill="rgb(236,103,43)" rx="2" ry="2" />
+<text  x="106.71" y="159.5" ></text>
+</g>
+<g >
+<title>lj_buf_putchar (1 samples, 0.16%)</title><rect x="775.0" y="181" width="1.9" height="15.0" fill="rgb(218,68,39)" rx="2" ry="2" />
+<text  x="777.99" y="191.5" ></text>
+</g>
+<g >
+<title>swapcontext (1 samples, 0.16%)</title><rect x="622.0" y="117" width="1.9" height="15.0" fill="rgb(244,66,45)" rx="2" ry="2" />
+<text  x="624.99" y="127.5" ></text>
+</g>
+<g >
+<title>lj_alloc_free (1 samples, 0.16%)</title><rect x="461.3" y="85" width="2.0" height="15.0" fill="rgb(205,191,47)" rx="2" ry="2" />
+<text  x="464.35" y="95.5" ></text>
+</g>
+<g >
+<title>ngx_hash_key_lc (1 samples, 0.16%)</title><rect x="895.5" y="181" width="1.9" height="15.0" fill="rgb(235,121,30)" rx="2" ry="2" />
+<text  x="898.48" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="101" width="1.9" height="15.0" fill="rgb(232,111,15)" rx="2" ry="2" />
+<text  x="653.68" y="111.5" ></text>
+</g>
+<g >
+<title>lj_strfmt_wfnum (1 samples, 0.16%)</title><rect x="782.6" y="181" width="2.0" height="15.0" fill="rgb(212,114,16)" rx="2" ry="2" />
+<text  x="785.64" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_UGET (2 samples, 0.32%)</title><rect x="541.7" y="165" width="3.8" height="15.0" fill="rgb(229,54,53)" rx="2" ry="2" />
+<text  x="544.67" y="175.5" ></text>
+</g>
+<g >
+<title>index2adr (1 samples, 0.16%)</title><rect x="708.1" y="181" width="1.9" height="15.0" fill="rgb(221,226,34)" rx="2" ry="2" />
+<text  x="711.06" y="191.5" ></text>
+</g>
+<g >
+<title>json_append_string (1 samples, 0.16%)</title><rect x="710.0" y="181" width="1.9" height="15.0" fill="rgb(236,96,22)" rx="2" ry="2" />
+<text  x="712.97" y="191.5" ></text>
+</g>
+<g >
+<title> (2 samples, 0.32%)</title><rect x="126.7" y="117" width="3.8" height="15.0" fill="rgb(240,170,34)" rx="2" ry="2" />
+<text  x="129.66" y="127.5" ></text>
+</g>
+<g >
+<title>ngx_http_read_client_request_body (1 samples, 0.16%)</title><rect x="1008.3" y="181" width="1.9" height="15.0" fill="rgb(206,144,10)" rx="2" ry="2" />
+<text  x="1011.31" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_read_request_header (1 samples, 0.16%)</title><rect x="1010.2" y="181" width="1.9" height="15.0" fill="rgb(213,0,3)" rx="2" ry="2" />
+<text  x="1013.23" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (2 samples, 0.32%)</title><rect x="105.6" y="85" width="3.8" height="15.0" fill="rgb(209,154,41)" rx="2" ry="2" />
+<text  x="108.62" y="95.5" ></text>
+</g>
+<g >
+<title>ngx_sprintf_num (1 samples, 0.16%)</title><rect x="1088.6" y="181" width="2.0" height="15.0" fill="rgb(224,104,28)" rx="2" ry="2" />
+<text  x="1091.64" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_log_handler (2 samples, 0.32%)</title><rect x="933.7" y="181" width="3.9" height="15.0" fill="rgb(225,32,24)" rx="2" ry="2" />
+<text  x="936.73" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_chain_update_sent (1 samples, 0.16%)</title><rect x="878.3" y="181" width="1.9" height="15.0" fill="rgb(221,60,13)" rx="2" ry="2" />
+<text  x="881.27" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/init.lua (3 samples, 0.49%)</title><rect x="207.0" y="133" width="5.7" height="15.0" fill="rgb(252,13,41)" rx="2" ry="2" />
+<text  x="209.99" y="143.5" ></text>
+</g>
+<g >
+<title>ngx_http_try_files_handler (1 samples, 0.16%)</title><rect x="1021.7" y="181" width="1.9" height="15.0" fill="rgb(219,212,20)" rx="2" ry="2" />
+<text  x="1024.70" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_variable_remote_user (1 samples, 0.16%)</title><rect x="1048.5" y="181" width="1.9" height="15.0" fill="rgb(243,200,39)" rx="2" ry="2" />
+<text  x="1051.48" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="103.7" y="53" width="1.9" height="15.0" fill="rgb(229,85,6)" rx="2" ry="2" />
+<text  x="106.71" y="63.5" ></text>
+</g>
+<g >
+<title>ngx_reusable_connection (14 samples, 2.27%)</title><rect x="1061.9" y="181" width="26.7" height="15.0" fill="rgb(220,202,43)" rx="2" ry="2" />
+<text  x="1064.86" y="191.5" >n..</text>
+</g>
+<g >
+<title>lj_str_new (2 samples, 0.32%)</title><rect x="365.7" y="37" width="3.8" height="15.0" fill="rgb(239,57,23)" rx="2" ry="2" />
+<text  x="368.72" y="47.5" ></text>
+</g>
+<g >
+<title>hash_sparse_sse42 (1 samples, 0.16%)</title><rect x="530.2" y="165" width="1.9" height="15.0" fill="rgb(236,211,48)" rx="2" ry="2" />
+<text  x="533.19" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_hash_strlow (3 samples, 0.49%)</title><rect x="897.4" y="181" width="5.7" height="15.0" fill="rgb(214,130,45)" rx="2" ry="2" />
+<text  x="900.39" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (24 samples, 3.89%)</title><rect x="421.2" y="101" width="45.9" height="15.0" fill="rgb(212,39,5)" rx="2" ry="2" />
+<text  x="424.18" y="111.5" >@/ho..</text>
+</g>
+<g >
+<title>__snprintf_chk (1 samples, 0.16%)</title><rect x="664.1" y="181" width="1.9" height="15.0" fill="rgb(250,192,47)" rx="2" ry="2" />
+<text  x="667.07" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (1 samples, 0.16%)</title><rect x="650.7" y="181" width="1.9" height="15.0" fill="rgb(216,110,11)" rx="2" ry="2" />
+<text  x="653.68" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_handler (1 samples, 0.16%)</title><rect x="1038.9" y="181" width="1.9" height="15.0" fill="rgb(244,62,17)" rx="2" ry="2" />
+<text  x="1041.91" y="191.5" ></text>
+</g>
+<g >
+<title>classend (1 samples, 0.16%)</title><rect x="484.3" y="149" width="1.9" height="15.0" fill="rgb(219,89,22)" rx="2" ry="2" />
+<text  x="487.29" y="159.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_now (1 samples, 0.16%)</title><rect x="981.5" y="181" width="2.0" height="15.0" fill="rgb(216,226,53)" rx="2" ry="2" />
+<text  x="984.54" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_hash_find (1 samples, 0.16%)</title><rect x="593.3" y="165" width="1.9" height="15.0" fill="rgb(220,218,39)" rx="2" ry="2" />
+<text  x="596.31" y="175.5" ></text>
+</g>
+<g >
+<title>lj_BC_ISTC (1 samples, 0.16%)</title><rect x="717.6" y="181" width="1.9" height="15.0" fill="rgb(246,129,29)" rx="2" ry="2" />
+<text  x="720.62" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="85" width="1.9" height="15.0" fill="rgb(215,31,11)" rx="2" ry="2" />
+<text  x="653.68" y="95.5" ></text>
+</g>
+<g >
+<title>ngx_event_pipe (1 samples, 0.16%)</title><rect x="884.0" y="181" width="1.9" height="15.0" fill="rgb(213,51,27)" rx="2" ry="2" />
+<text  x="887.00" y="191.5" ></text>
+</g>
+<g >
+<title>hash_16_128 (1 samples, 0.16%)</title><rect x="698.5" y="181" width="1.9" height="15.0" fill="rgb(234,84,27)" rx="2" ry="2" />
+<text  x="701.49" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_validate_host (1 samples, 0.16%)</title><rect x="1046.6" y="181" width="1.9" height="15.0" fill="rgb(246,38,30)" rx="2" ry="2" />
+<text  x="1049.56" y="191.5" ></text>
+</g>
+<g >
+<title>=access_by_lua(nginx.conf:268) (3 samples, 0.49%)</title><rect x="207.0" y="149" width="5.7" height="15.0" fill="rgb(219,148,26)" rx="2" ry="2" />
+<text  x="209.99" y="159.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_decode_base64 (1 samples, 0.16%)</title><rect x="977.7" y="181" width="1.9" height="15.0" fill="rgb(206,169,17)" rx="2" ry="2" />
+<text  x="980.71" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_set_header_helper (1 samples, 0.16%)</title><rect x="1019.8" y="181" width="1.9" height="15.0" fill="rgb(215,162,34)" rx="2" ry="2" />
+<text  x="1022.79" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_epoll_process_events (2 samples, 0.32%)</title><rect x="880.2" y="181" width="3.8" height="15.0" fill="rgb(238,195,34)" rx="2" ry="2" />
+<text  x="883.18" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="205.1" y="133" width="1.9" height="15.0" fill="rgb(226,70,34)" rx="2" ry="2" />
+<text  x="208.07" y="143.5" ></text>
+</g>
+<g >
+<title>ngx_rbtree_delete (1 samples, 0.16%)</title><rect x="1060.0" y="181" width="1.9" height="15.0" fill="rgb(222,40,50)" rx="2" ry="2" />
+<text  x="1062.95" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ngx_ctx_cleanup (1 samples, 0.16%)</title><rect x="991.1" y="181" width="1.9" height="15.0" fill="rgb(239,36,50)" rx="2" ry="2" />
+<text  x="994.10" y="191.5" ></text>
+</g>
+<g >
+<title>OPENSSL_cleanse (1 samples, 0.16%)</title><rect x="652.6" y="181" width="1.9" height="15.0" fill="rgb(235,79,39)" rx="2" ry="2" />
+<text  x="655.59" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_balancer_free_peer (12 samples, 1.94%)</title><rect x="937.6" y="181" width="22.9" height="15.0" fill="rgb(242,83,22)" rx="2" ry="2" />
+<text  x="940.55" y="191.5" >n..</text>
+</g>
+<g >
+<title>lj_ccall_func (1 samples, 0.16%)</title><rect x="218.5" y="101" width="1.9" height="15.0" fill="rgb(251,120,38)" rx="2" ry="2" />
+<text  x="221.46" y="111.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (11 samples, 1.78%)</title><rect x="212.7" y="117" width="21.1" height="15.0" fill="rgb(236,219,11)" rx="2" ry="2" />
+<text  x="215.72" y="127.5" ></text>
+</g>
+<g >
+<title>lj_cconv_compatptr.part.0 (1 samples, 0.16%)</title><rect x="547.4" y="165" width="1.9" height="15.0" fill="rgb(253,161,24)" rx="2" ry="2" />
+<text  x="550.41" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/core/config_yaml.lua (1 samples, 0.16%)</title><rect x="635.4" y="181" width="1.9" height="15.0" fill="rgb(242,78,49)" rx="2" ry="2" />
+<text  x="638.38" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_parse_header_line (2 samples, 0.32%)</title><rect x="996.8" y="181" width="3.9" height="15.0" fill="rgb(232,219,48)" rx="2" ry="2" />
+<text  x="999.84" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="214.6" y="101" width="1.9" height="15.0" fill="rgb(208,144,5)" rx="2" ry="2" />
+<text  x="217.64" y="111.5" ></text>
+</g>
+<g >
+<title>lj_BC_GGET (1 samples, 0.16%)</title><rect x="711.9" y="181" width="1.9" height="15.0" fill="rgb(221,155,22)" rx="2" ry="2" />
+<text  x="714.88" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_new_thread (1 samples, 0.16%)</title><rect x="989.2" y="181" width="1.9" height="15.0" fill="rgb(242,175,29)" rx="2" ry="2" />
+<text  x="992.19" y="191.5" ></text>
+</g>
+<g >
+<title>lua_pushinteger (1 samples, 0.16%)</title><rect x="828.5" y="181" width="2.0" height="15.0" fill="rgb(220,100,35)" rx="2" ry="2" />
+<text  x="831.54" y="191.5" ></text>
+</g>
+<g >
+<title>api_call_base (1 samples, 0.16%)</title><rect x="667.9" y="181" width="1.9" height="15.0" fill="rgb(232,212,52)" rx="2" ry="2" />
+<text  x="670.89" y="191.5" ></text>
+</g>
+<g >
+<title>match.part.0 (1 samples, 0.16%)</title><rect x="579.9" y="165" width="1.9" height="15.0" fill="rgb(205,45,17)" rx="2" ry="2" />
+<text  x="582.92" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_status_variable (1 samples, 0.16%)</title><rect x="1044.7" y="181" width="1.9" height="15.0" fill="rgb(210,227,25)" rx="2" ry="2" />
+<text  x="1047.65" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (1 samples, 0.16%)</title><rect x="633.5" y="181" width="1.9" height="15.0" fill="rgb(238,3,49)" rx="2" ry="2" />
+<text  x="636.47" y="191.5" ></text>
+</g>
+<g >
+<title>lj_tab_len (1 samples, 0.16%)</title><rect x="119.0" y="133" width="1.9" height="15.0" fill="rgb(226,4,50)" rx="2" ry="2" />
+<text  x="122.01" y="143.5" ></text>
+</g>
+<g >
+<title>lj_tab_resize (1 samples, 0.16%)</title><rect x="788.4" y="181" width="1.9" height="15.0" fill="rgb(246,206,51)" rx="2" ry="2" />
+<text  x="791.38" y="191.5" ></text>
+</g>
+<g >
+<title>lj_strfmt_parse (1 samples, 0.16%)</title><rect x="472.8" y="101" width="1.9" height="15.0" fill="rgb(239,215,27)" rx="2" ry="2" />
+<text  x="475.82" y="111.5" ></text>
+</g>
+<g >
+<title>lj_alloc_free (1 samples, 0.16%)</title><rect x="633.5" y="165" width="1.9" height="15.0" fill="rgb(234,138,2)" rx="2" ry="2" />
+<text  x="636.47" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/radixtree.lua (13 samples, 2.11%)</title><rect x="212.7" y="133" width="24.9" height="15.0" fill="rgb(250,74,47)" rx="2" ry="2" />
+<text  x="215.72" y="143.5" >@..</text>
+</g>
+<g >
+<title>lj_BC_TSETS (1 samples, 0.16%)</title><rect x="130.5" y="165" width="1.9" height="15.0" fill="rgb(237,16,20)" rx="2" ry="2" />
+<text  x="133.49" y="175.5" ></text>
+</g>
+<g >
+<title>lua_pcall (19 samples, 3.08%)</title><rect x="792.2" y="181" width="36.3" height="15.0" fill="rgb(205,0,16)" rx="2" ry="2" />
+<text  x="795.20" y="191.5" >lua..</text>
+</g>
+<g >
+<title>ngx_http_core_find_location (1 samples, 0.16%)</title><rect x="908.9" y="181" width="1.9" height="15.0" fill="rgb(210,121,2)" rx="2" ry="2" />
+<text  x="911.87" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_get_ctx_ref (1 samples, 0.16%)</title><rect x="979.6" y="181" width="1.9" height="15.0" fill="rgb(217,132,23)" rx="2" ry="2" />
+<text  x="982.63" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_RET (2 samples, 0.32%)</title><rect x="734.8" y="181" width="3.9" height="15.0" fill="rgb(235,188,25)" rx="2" ry="2" />
+<text  x="737.83" y="191.5" ></text>
+</g>
+<g >
+<title>hash_sparse_sse42 (2 samples, 0.32%)</title><rect x="700.4" y="181" width="3.8" height="15.0" fill="rgb(224,86,36)" rx="2" ry="2" />
+<text  x="703.41" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (2 samples, 0.32%)</title><rect x="105.6" y="69" width="3.8" height="15.0" fill="rgb(227,158,9)" rx="2" ry="2" />
+<text  x="108.62" y="79.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugin.lua (128 samples, 20.75%)</title><rect x="239.5" y="149" width="244.8" height="15.0" fill="rgb(210,4,4)" rx="2" ry="2" />
+<text  x="242.50" y="159.5" >@/home/yunwei/coding/backlog/api..</text>
+</g>
+<g >
+<title>json_next_token (1 samples, 0.16%)</title><rect x="532.1" y="165" width="1.9" height="15.0" fill="rgb(216,227,54)" rx="2" ry="2" />
+<text  x="535.11" y="175.5" ></text>
+</g>
+<g >
+<title>lua_pcall (2 samples, 0.32%)</title><rect x="463.3" y="85" width="3.8" height="15.0" fill="rgb(214,140,0)" rx="2" ry="2" />
+<text  x="466.26" y="95.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/init.lua (169 samples, 27.39%)</title><rect x="191.7" y="165" width="323.2" height="15.0" fill="rgb(226,203,46)" rx="2" ry="2" />
+<text  x="194.69" y="175.5" >@/home/yunwei/coding/backlog/apisix/apisix/..</text>
+</g>
+<g >
+<title>lua_checkstack (1 samples, 0.16%)</title><rect x="405.9" y="53" width="1.9" height="15.0" fill="rgb(225,194,45)" rx="2" ry="2" />
+<text  x="408.88" y="63.5" ></text>
+</g>
+<g >
+<title>lj_BC_JLOOP (1 samples, 0.16%)</title><rect x="205.1" y="69" width="1.9" height="15.0" fill="rgb(216,69,52)" rx="2" ry="2" />
+<text  x="208.07" y="79.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (2 samples, 0.32%)</title><rect x="646.9" y="149" width="3.8" height="15.0" fill="rgb(236,129,2)" rx="2" ry="2" />
+<text  x="649.86" y="159.5" ></text>
+</g>
+<g >
+<title>writev (11 samples, 1.78%)</title><rect x="1169.0" y="181" width="21.0" height="15.0" fill="rgb(251,224,7)" rx="2" ry="2" />
+<text  x="1171.96" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="644.9" y="85" width="2.0" height="15.0" fill="rgb(224,191,49)" rx="2" ry="2" />
+<text  x="647.94" y="95.5" ></text>
+</g>
+<g >
+<title>propagatemark (2 samples, 0.32%)</title><rect x="1147.9" y="181" width="3.9" height="15.0" fill="rgb(213,169,50)" rx="2" ry="2" />
+<text  x="1150.93" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_JLOOP (2 samples, 0.32%)</title><rect x="725.3" y="181" width="3.8" height="15.0" fill="rgb(251,189,18)" rx="2" ry="2" />
+<text  x="728.27" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (3 samples, 0.49%)</title><rect x="207.0" y="101" width="5.7" height="15.0" fill="rgb(218,60,3)" rx="2" ry="2" />
+<text  x="209.99" y="111.5" ></text>
+</g>
+<g >
+<title>lj_BC_JFUNCF (2 samples, 0.32%)</title><rect x="495.8" y="149" width="3.8" height="15.0" fill="rgb(248,129,27)" rx="2" ry="2" />
+<text  x="498.77" y="159.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="239.5" y="85" width="1.9" height="15.0" fill="rgb(242,84,6)" rx="2" ry="2" />
+<text  x="242.50" y="95.5" ></text>
+</g>
+<g >
+<title>lua_pcall (7 samples, 1.13%)</title><rect x="407.8" y="53" width="13.4" height="15.0" fill="rgb(214,63,17)" rx="2" ry="2" />
+<text  x="410.80" y="63.5" ></text>
+</g>
+<g >
+<title>mmcall (1 samples, 0.16%)</title><rect x="581.8" y="165" width="1.9" height="15.0" fill="rgb(236,121,33)" rx="2" ry="2" />
+<text  x="584.83" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_set_output_header (1 samples, 0.16%)</title><rect x="993.0" y="181" width="1.9" height="15.0" fill="rgb(210,42,48)" rx="2" ry="2" />
+<text  x="996.01" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_strlow (1 samples, 0.16%)</title><rect x="1090.6" y="181" width="1.9" height="15.0" fill="rgb(241,79,1)" rx="2" ry="2" />
+<text  x="1093.55" y="191.5" ></text>
+</g>
+<g >
+<title> (63 samples, 10.21%)</title><rect x="251.0" y="53" width="120.5" height="15.0" fill="rgb(253,24,51)" rx="2" ry="2" />
+<text  x="253.97" y="63.5" ></text>
+</g>
+<g >
+<title> (9 samples, 1.46%)</title><rect x="103.7" y="165" width="17.2" height="15.0" fill="rgb(217,5,37)" rx="2" ry="2" />
+<text  x="106.71" y="175.5" ></text>
+</g>
+<g >
+<title>SHA1_Init (3 samples, 0.49%)</title><rect x="514.9" y="165" width="5.7" height="15.0" fill="rgb(208,54,30)" rx="2" ry="2" />
+<text  x="517.89" y="175.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugins/jwt-auth.lua (5 samples, 0.81%)</title><rect x="120.9" y="165" width="9.6" height="15.0" fill="rgb(248,80,30)" rx="2" ry="2" />
+<text  x="123.92" y="175.5" ></text>
+</g>
+<g >
+<title>vprintf (2 samples, 0.32%)</title><rect x="620.1" y="133" width="3.8" height="15.0" fill="rgb(245,171,41)" rx="2" ry="2" />
+<text  x="623.08" y="143.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (1 samples, 0.16%)</title><rect x="115.2" y="133" width="1.9" height="15.0" fill="rgb(237,162,30)" rx="2" ry="2" />
+<text  x="118.19" y="143.5" ></text>
+</g>
+<g >
+<title>lj_cf_string_gsub (1 samples, 0.16%)</title><rect x="776.9" y="181" width="1.9" height="15.0" fill="rgb(231,2,24)" rx="2" ry="2" />
+<text  x="779.90" y="191.5" ></text>
+</g>
+<g >
+<title>fpconv_g_fmt (1 samples, 0.16%)</title><rect x="675.5" y="181" width="2.0" height="15.0" fill="rgb(254,190,31)" rx="2" ry="2" />
+<text  x="678.54" y="191.5" ></text>
+</g>
+<g >
+<title>lj_cf_ffi_clib___index (2 samples, 0.32%)</title><rect x="220.4" y="101" width="3.8" height="15.0" fill="rgb(239,130,28)" rx="2" ry="2" />
+<text  x="223.37" y="111.5" ></text>
+</g>
+<g >
+<title>gc_onestep (1 samples, 0.16%)</title><rect x="677.5" y="181" width="1.9" height="15.0" fill="rgb(248,193,11)" rx="2" ry="2" />
+<text  x="680.46" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="205.1" y="101" width="1.9" height="15.0" fill="rgb(219,52,37)" rx="2" ry="2" />
+<text  x="208.07" y="111.5" ></text>
+</g>
+<g >
+<title>gc_sweep (2 samples, 0.32%)</title><rect x="488.1" y="149" width="3.8" height="15.0" fill="rgb(218,73,12)" rx="2" ry="2" />
+<text  x="491.12" y="159.5" ></text>
+</g>
+<g >
+<title>newtab (1 samples, 0.16%)</title><rect x="109.4" y="117" width="2.0" height="15.0" fill="rgb(210,78,12)" rx="2" ry="2" />
+<text  x="112.45" y="127.5" ></text>
+</g>
+<g >
+<title>ngx_http_script_not_equal_code (1 samples, 0.16%)</title><rect x="1014.1" y="181" width="1.9" height="15.0" fill="rgb(234,77,41)" rx="2" ry="2" />
+<text  x="1017.05" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="103.7" y="69" width="1.9" height="15.0" fill="rgb(240,210,7)" rx="2" ry="2" />
+<text  x="106.71" y="79.5" ></text>
+</g>
+<g >
+<title>gc_finalize (57 samples, 9.24%)</title><rect x="251.0" y="37" width="109.0" height="15.0" fill="rgb(214,144,6)" rx="2" ry="2" />
+<text  x="253.97" y="47.5" >gc_finalize</text>
+</g>
+<g >
+<title>ngx_http_lua_ffi_now (1 samples, 0.16%)</title><rect x="138.1" y="165" width="1.9" height="15.0" fill="rgb(232,202,25)" rx="2" ry="2" />
+<text  x="141.14" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_apisix_is_request_header_set (1 samples, 0.16%)</title><rect x="595.2" y="165" width="1.9" height="15.0" fill="rgb(224,93,8)" rx="2" ry="2" />
+<text  x="598.22" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_output_filter (1 samples, 0.16%)</title><rect x="994.9" y="181" width="1.9" height="15.0" fill="rgb(205,108,13)" rx="2" ry="2" />
+<text  x="997.93" y="191.5" ></text>
+</g>
+<g >
+<title>vscanf (7 samples, 1.13%)</title><rect x="610.5" y="165" width="13.4" height="15.0" fill="rgb(245,102,24)" rx="2" ry="2" />
+<text  x="613.52" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_get_indexed_variable (5 samples, 0.81%)</title><rect x="910.8" y="181" width="9.5" height="15.0" fill="rgb(217,121,35)" rx="2" ry="2" />
+<text  x="913.78" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_ISEQV (1 samples, 0.16%)</title><rect x="713.8" y="181" width="1.9" height="15.0" fill="rgb(216,195,35)" rx="2" ry="2" />
+<text  x="716.79" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (1 samples, 0.16%)</title><rect x="644.9" y="133" width="2.0" height="15.0" fill="rgb(216,75,24)" rx="2" ry="2" />
+<text  x="647.94" y="143.5" ></text>
+</g>
+<g >
+<title>getsockopt (5 samples, 0.81%)</title><rect x="687.0" y="181" width="9.6" height="15.0" fill="rgb(206,131,47)" rx="2" ry="2" />
+<text  x="690.02" y="191.5" ></text>
+</g>
+<g >
+<title> (95 samples, 15.40%)</title><rect x="239.5" y="101" width="181.7" height="15.0" fill="rgb(219,38,24)" rx="2" ry="2" />
+<text  x="242.50" y="111.5" ></text>
+</g>
+<g >
+<title>gc_sweep (2 samples, 0.32%)</title><rect x="679.4" y="181" width="3.8" height="15.0" fill="rgb(207,50,7)" rx="2" ry="2" />
+<text  x="682.37" y="191.5" ></text>
+</g>
+<g >
+<title> (3 samples, 0.49%)</title><rect x="103.7" y="117" width="5.7" height="15.0" fill="rgb(218,182,7)" rx="2" ry="2" />
+<text  x="106.71" y="127.5" ></text>
+</g>
+<g >
+<title>lj_BC_LEN (1 samples, 0.16%)</title><rect x="729.1" y="181" width="1.9" height="15.0" fill="rgb(215,94,24)" rx="2" ry="2" />
+<text  x="732.09" y="191.5" ></text>
+</g>
+<g >
+<title>lua_remove (3 samples, 0.49%)</title><rect x="834.3" y="181" width="5.7" height="15.0" fill="rgb(220,33,9)" rx="2" ry="2" />
+<text  x="837.28" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (94 samples, 15.24%)</title><rect x="241.4" y="85" width="179.8" height="15.0" fill="rgb(241,65,31)" rx="2" ry="2" />
+<text  x="244.41" y="95.5" >@/home/yunwei/coding/ba..</text>
+</g>
+<g >
+<title>hash_16_128 (15 samples, 2.43%)</title><rect x="371.5" y="53" width="28.6" height="15.0" fill="rgb(218,55,45)" rx="2" ry="2" />
+<text  x="374.46" y="63.5" >ha..</text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="69" width="1.9" height="15.0" fill="rgb(228,76,8)" rx="2" ry="2" />
+<text  x="653.68" y="79.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix/apisix/plugin.lua (2 samples, 0.32%)</title><rect x="646.9" y="181" width="3.8" height="15.0" fill="rgb(206,27,37)" rx="2" ry="2" />
+<text  x="649.86" y="191.5" ></text>
+</g>
+<g >
+<title>lj_alloc_malloc (7 samples, 1.13%)</title><rect x="761.6" y="181" width="13.4" height="15.0" fill="rgb(213,89,12)" rx="2" ry="2" />
+<text  x="764.60" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="650.7" y="149" width="1.9" height="15.0" fill="rgb(220,114,25)" rx="2" ry="2" />
+<text  x="653.68" y="159.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/hmac.lua (1 samples, 0.16%)</title><rect x="631.6" y="181" width="1.9" height="15.0" fill="rgb(249,49,38)" rx="2" ry="2" />
+<text  x="634.56" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (94 samples, 15.24%)</title><rect x="241.4" y="69" width="179.8" height="15.0" fill="rgb(207,183,40)" rx="2" ry="2" />
+<text  x="244.41" y="79.5" >@/home/yunwei/coding/ba..</text>
+</g>
+<g >
+<title>ngx_linux_sendfile_chain (1 samples, 0.16%)</title><rect x="1050.4" y="181" width="1.9" height="15.0" fill="rgb(237,114,53)" rx="2" ry="2" />
+<text  x="1053.39" y="191.5" ></text>
+</g>
+<g >
+<title>lj_cf_string_format (1 samples, 0.16%)</title><rect x="470.9" y="101" width="1.9" height="15.0" fill="rgb(233,27,28)" rx="2" ry="2" />
+<text  x="473.91" y="111.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (3 samples, 0.49%)</title><rect x="207.0" y="69" width="5.7" height="15.0" fill="rgb(252,52,18)" rx="2" ry="2" />
+<text  x="209.99" y="79.5" ></text>
+</g>
+<g >
+<title>lj_alloc_f (1 samples, 0.16%)</title><rect x="545.5" y="165" width="1.9" height="15.0" fill="rgb(209,44,33)" rx="2" ry="2" />
+<text  x="548.49" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_init_request (1 samples, 0.16%)</title><rect x="1040.8" y="181" width="1.9" height="15.0" fill="rgb(226,102,54)" rx="2" ry="2" />
+<text  x="1043.83" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_apisix_delay_client_max_body_check (1 samples, 0.16%)</title><rect x="903.1" y="181" width="1.9" height="15.0" fill="rgb(206,159,9)" rx="2" ry="2" />
+<text  x="906.13" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_strncasecmp (2 samples, 0.32%)</title><rect x="1092.5" y="181" width="3.8" height="15.0" fill="rgb(209,27,50)" rx="2" ry="2" />
+<text  x="1095.46" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="644.9" y="53" width="2.0" height="15.0" fill="rgb(219,26,50)" rx="2" ry="2" />
+<text  x="647.94" y="63.5" ></text>
+</g>
+<g >
+<title>lj_clib_index (4 samples, 0.65%)</title><rect x="224.2" y="101" width="7.6" height="15.0" fill="rgb(232,209,33)" rx="2" ry="2" />
+<text  x="227.20" y="111.5" ></text>
+</g>
+<g >
+<title>__nss_database_lookup (5 samples, 0.81%)</title><rect x="654.5" y="181" width="9.6" height="15.0" fill="rgb(237,87,33)" rx="2" ry="2" />
+<text  x="657.51" y="191.5" ></text>
+</g>
+<g >
+<title>@/home/yunwei/coding/backlog/apisix//deps/share/lua/5.1/resty/jwt.lua (123 samples, 19.94%)</title><rect x="239.5" y="117" width="235.2" height="15.0" fill="rgb(217,36,27)" rx="2" ry="2" />
+<text  x="242.50" y="127.5" >@/home/yunwei/coding/backlog/ap..</text>
+</g>
+<g >
+<title>lua_rawget (1 samples, 0.16%)</title><rect x="830.5" y="181" width="1.9" height="15.0" fill="rgb(225,96,0)" rx="2" ry="2" />
+<text  x="833.45" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_decode_base64 (4 samples, 0.65%)</title><rect x="585.7" y="165" width="7.6" height="15.0" fill="rgb(210,213,33)" rx="2" ry="2" />
+<text  x="588.66" y="175.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (2 samples, 0.32%)</title><rect x="505.3" y="149" width="3.9" height="15.0" fill="rgb(226,212,51)" rx="2" ry="2" />
+<text  x="508.33" y="159.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_cache_loadbuffer (1 samples, 0.16%)</title><rect x="966.2" y="181" width="2.0" height="15.0" fill="rgb(215,153,41)" rx="2" ry="2" />
+<text  x="969.24" y="191.5" ></text>
+</g>
+<g >
+<title>propagatemark (1 samples, 0.16%)</title><rect x="606.7" y="165" width="1.9" height="15.0" fill="rgb(237,6,12)" rx="2" ry="2" />
+<text  x="609.69" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_userid_filter (2 samples, 0.32%)</title><rect x="1029.4" y="165" width="3.8" height="15.0" fill="rgb(234,9,27)" rx="2" ry="2" />
+<text  x="1032.35" y="175.5" ></text>
+</g>
+<g >
+<title>lj_tab_nkeys (2 samples, 0.32%)</title><rect x="576.1" y="165" width="3.8" height="15.0" fill="rgb(214,67,44)" rx="2" ry="2" />
+<text  x="579.09" y="175.5" ></text>
+</g>
+<g >
+<title>lj_vm_exit_interp (1 samples, 0.16%)</title><rect x="128.6" y="85" width="1.9" height="15.0" fill="rgb(230,78,6)" rx="2" ry="2" />
+<text  x="131.57" y="95.5" ></text>
+</g>
+<g >
+<title>lj_alloc_f (1 samples, 0.16%)</title><rect x="746.3" y="181" width="1.9" height="15.0" fill="rgb(232,174,15)" rx="2" ry="2" />
+<text  x="749.30" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_copy_escaped_header (2 samples, 0.32%)</title><rect x="968.2" y="181" width="3.8" height="15.0" fill="rgb(206,42,27)" rx="2" ry="2" />
+<text  x="971.15" y="191.5" ></text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="644.9" y="69" width="2.0" height="15.0" fill="rgb(242,113,43)" rx="2" ry="2" />
+<text  x="647.94" y="79.5" ></text>
+</g>
+<g >
+<title>ngx_http_lua_del_thread (3 samples, 0.49%)</title><rect x="972.0" y="181" width="5.7" height="15.0" fill="rgb(210,13,46)" rx="2" ry="2" />
+<text  x="974.98" y="191.5" ></text>
+</g>
+<g >
+<title>pcre_exec (24 samples, 3.89%)</title><rect x="1102.0" y="181" width="45.9" height="15.0" fill="rgb(211,6,18)" rx="2" ry="2" />
+<text  x="1105.03" y="191.5" >pcre..</text>
+</g>
+<g >
+<title>ngx_palloc_large (1 samples, 0.16%)</title><rect x="1033.2" y="165" width="1.9" height="15.0" fill="rgb(245,93,48)" rx="2" ry="2" />
+<text  x="1036.18" y="175.5" ></text>
+</g>
+<g >
+<title>lj_tab_setstr (1 samples, 0.16%)</title><rect x="231.8" y="101" width="2.0" height="15.0" fill="rgb(230,227,10)" rx="2" ry="2" />
+<text  x="234.85" y="111.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_dummy_handler (7 samples, 1.13%)</title><rect x="1023.6" y="181" width="13.4" height="15.0" fill="rgb(251,91,24)" rx="2" ry="2" />
+<text  x="1026.61" y="191.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETS (2 samples, 0.32%)</title><rect x="467.1" y="101" width="3.8" height="15.0" fill="rgb(247,22,26)" rx="2" ry="2" />
+<text  x="470.08" y="111.5" ></text>
+</g>
+<g >
+<title>=log_by_lua(nginx.conf:331) (4 samples, 0.65%)</title><rect x="623.9" y="181" width="7.7" height="15.0" fill="rgb(231,203,24)" rx="2" ry="2" />
+<text  x="626.91" y="191.5" ></text>
+</g>
+<g >
+<title>lj_func_newL_gc (19 samples, 3.08%)</title><rect x="425.0" y="69" width="36.3" height="15.0" fill="rgb(252,50,43)" rx="2" ry="2" />
+<text  x="428.01" y="79.5" >lj_..</text>
+</g>
+<g >
+<title>_init (2 samples, 0.32%)</title><rect x="526.4" y="165" width="3.8" height="15.0" fill="rgb(239,69,12)" rx="2" ry="2" />
+<text  x="529.37" y="175.5" ></text>
+</g>
+<g >
+<title>ngx_http_process_request_uri (1 samples, 0.16%)</title><rect x="1000.7" y="181" width="1.9" height="15.0" fill="rgb(209,52,32)" rx="2" ry="2" />
+<text  x="1003.66" y="191.5" ></text>
+</g>
+<g >
+<title>ngx_http_proxy_internal_body_length_variable (1 samples, 0.16%)</title><rect x="1002.6" y="181" width="1.9" height="15.0" fill="rgb(247,206,46)" rx="2" ry="2" />
+<text  x="1005.58" y="191.5" ></text>
+</g>
+<g >
+<title>lj_cont_dispatch (3 samples, 0.49%)</title><rect x="132.4" y="165" width="5.7" height="15.0" fill="rgb(213,216,41)" rx="2" ry="2" />
+<text  x="135.40" y="175.5" ></text>
+</g>
+<g >
+<title>epoll_wait (1 samples, 0.16%)</title><rect x="673.6" y="181" width="1.9" height="15.0" fill="rgb(243,22,41)" rx="2" ry="2" />
+<text  x="676.63" y="191.5" ></text>
+</g>
+<g >
+<title>gc_finalize (1 samples, 0.16%)</title><rect x="486.2" y="149" width="1.9" height="15.0" fill="rgb(251,75,30)" rx="2" ry="2" />
+<text  x="489.21" y="159.5" ></text>
+</g>
+<g >
+<title>lj_func_newL_gc (1 samples, 0.16%)</title><rect x="648.8" y="85" width="1.9" height="15.0" fill="rgb(231,211,51)" rx="2" ry="2" />
+<text  x="651.77" y="95.5" ></text>
+</g>
+<g >
+<title> (2 samples, 0.32%)</title><rect x="126.7" y="149" width="3.8" height="15.0" fill="rgb(231,104,34)" rx="2" ry="2" />
+<text  x="129.66" y="159.5" ></text>
+</g>
+<g >
+<title>lj_BC_TGETV (1 samples, 0.16%)</title><rect x="744.4" y="181" width="1.9" height="15.0" fill="rgb(228,171,42)" rx="2" ry="2" />
+<text  x="747.39" y="191.5" ></text>
+</g>
+<g >
+<title> (3 samples, 0.49%)</title><rect x="103.7" y="101" width="5.7" height="15.0" fill="rgb(242,166,27)" rx="2" ry="2" />
+<text  x="106.71" y="111.5" ></text>
+</g>
+<g >
+<title>ngx_http_upstream_process_headers (1 samples, 0.16%)</title><rect x="1027.4" y="165" width="2.0" height="15.0" fill="rgb(244,83,10)" rx="2" ry="2" />
+<text  x="1030.44" y="175.5" ></text>
+</g>
+<g >
+<title>lj_str_new (12 samples, 1.94%)</title><rect x="549.3" y="165" width="23.0" height="15.0" fill="rgb(206,72,4)" rx="2" ry="2" />
+<text  x="552.32" y="175.5" >l..</text>
+</g>
+<g >
+<title> (1 samples, 0.16%)</title><rect x="103.7" y="85" width="1.9" height="15.0" fill="rgb(233,224,47)" rx="2" ry="2" />
+<text  x="106.71" y="95.5" ></text>
+</g>
+</g>
+</svg>

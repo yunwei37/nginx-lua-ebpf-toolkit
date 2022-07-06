@@ -119,6 +119,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 			GCfunc *fn = frame_func(frame);
 			if (!fn)
 				continue;
+			// eventp->type = FUNC_TYPE_LUA;
 			GCproto *pt = funcproto(fn);
 			if (!pt)
 				continue;
@@ -128,6 +129,16 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 				continue;
 			bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
 			bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
+			// if (iscfunc(fn))
+			// {
+			// 	eventp->type = FUNC_TYPE_C;
+			// 	eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
+			// }
+			// else if (isffunc(fn))
+			// {
+			// 	eventp->type = FUNC_TYPE_F;
+			// 	eventp->funcp = (void *)BPF_PROBE_READ_USER(fn, c.ffid);
+			// }
 			eventp->level = count;
 			bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 			level++;
