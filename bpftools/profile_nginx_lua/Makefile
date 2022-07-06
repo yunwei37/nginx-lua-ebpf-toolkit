@@ -45,7 +45,7 @@ all: $(APPS)
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) $(APPS)
+	$(Q)rm -rf $(OUTPUT) $(APPS) *.o
 
 $(OUTPUT) $(OUTPUT)/libbpf:
 	$(call msg,MKDIR,$@)
@@ -83,7 +83,7 @@ trace_helpers.o: trace_helpers.c
 uprobe_helpers.o: uprobe_helpers.c 
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
-lua_stacks_helper.o: lua_stacks_helper.cpp
+lua_stacks_helper.o: lua_stacks_helper.cpp profile.h lua_stacks_helper.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.cpp,$^) -o $@
 
 # Build application binary

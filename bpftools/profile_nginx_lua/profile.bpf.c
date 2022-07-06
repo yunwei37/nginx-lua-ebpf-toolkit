@@ -99,7 +99,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
 	// bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 	/* Traverse frames backwards. */
-	for (; i < 10 && frame > bot; i++)
+	for (; i < 12 && frame > bot; i++)
 	{
 		// bpf_printk("loop %d\n", i);
 		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
@@ -110,6 +110,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 		}
 		if (level-- == 0)
 		{
+			level++;
 			// *size = (nextframe - frame);
 			// bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 			// bpf_printk("size=%d, frame=%p\n", size, frame);
@@ -119,29 +120,31 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 			GCfunc *fn = frame_func(frame);
 			if (!fn)
 				continue;
-			// eventp->type = FUNC_TYPE_LUA;
-			GCproto *pt = funcproto(fn);
-			if (!pt)
-				continue;
-			GCstr *name = proto_chunkname(pt); /* GCstr *name */
-			const char *src = strdata(name);
-			if (!src)
-				continue;
-			bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
-			bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
-			// if (iscfunc(fn))
-			// {
-			// 	eventp->type = FUNC_TYPE_C;
-			// 	eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
-			// }
-			// else if (isffunc(fn))
-			// {
-			// 	eventp->type = FUNC_TYPE_F;
-			// 	eventp->funcp = (void *)BPF_PROBE_READ_USER(fn, c.ffid);
-			// }
+			if (isluafunc(fn))
+			{
+				eventp->type = FUNC_TYPE_LUA;
+				GCproto *pt = funcproto(fn);
+				if (!pt)
+					continue;
+				GCstr *name = proto_chunkname(pt); /* GCstr *name */
+				const char *src = strdata(name);
+				if (!src)
+					continue;
+				bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
+				bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
+			}
+			else if (iscfunc(fn))
+			{
+				eventp->type = FUNC_TYPE_C;
+				eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
+			}
+			else if (isffunc(fn))
+			{
+				eventp->type = FUNC_TYPE_F;
+				eventp->funcp = (void *)BPF_PROBE_READ_USER(fn, c.ffid);
+			}
 			eventp->level = count;
 			bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
-			level++;
 			count++;
 		}
 		nextframe = frame;

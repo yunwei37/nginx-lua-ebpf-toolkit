@@ -16,21 +16,21 @@ struct key_t
 	char name[TASK_COMM_LEN];
 };
 
-// enum func_type {
-// 	FUNC_TYPE_LUA,
-// 	FUNC_TYPE_C,
-// 	FUNC_TYPE_F,
-// 	FUNC_TYPE_UNKNOWN,
-// };
+enum func_type {
+	FUNC_TYPE_LUA,
+	FUNC_TYPE_C,
+	FUNC_TYPE_F,
+	FUNC_TYPE_UNKNOWN,
+};
 
 struct lua_stack_event
 {
 	unsigned int pid;
 	int  user_stack_id;
 	int  level;
-	//enum func_type type;
+	int type;
 	char name[HOST_LEN];
-	//void *funcp;
+	void *funcp;
 	void *L;
 };
 

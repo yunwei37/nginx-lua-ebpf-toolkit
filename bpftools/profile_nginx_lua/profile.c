@@ -473,7 +473,20 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 						{
 							if (count >= 0)
 							{
-								printf(";%s", lua_bt.stack[count--].name);
+								if (lua_bt.stack[count].type == FUNC_TYPE_LUA) {
+									printf(";Lua:%s", lua_bt.stack[count].name);
+								} else if (lua_bt.stack[count].type == FUNC_TYPE_C) {
+									sym = syms__map_addr(syms, lua_bt.stack[count].funcp);
+									if (sym)
+									{
+										printf(";C:%s", sym ? sym->name : "[unknown]");
+									}
+								} else if (lua_bt.stack[count].type == FUNC_TYPE_F) {
+									printf(";builtin#%d", (int)lua_bt.stack[count].funcp);
+								} else {
+									//printf(";[unknown]");
+								}
+								count--;
 							}
 							else if (lua_bt.level_size == 0)
 							{
