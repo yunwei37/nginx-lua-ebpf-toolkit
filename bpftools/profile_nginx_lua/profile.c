@@ -396,7 +396,6 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 
 	cfd = bpf_map__fd(obj->maps.counts);
 	sfd = bpf_map__fd(obj->maps.stackmap);
-	luafd = bpf_map__fd(obj->maps.lua_stack_bt);
 
 	nr_count = MAX_ENTRIES;
 	if (!read_counts_map(cfd, counts, &nr_count))
@@ -434,12 +433,6 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					nr_uip++;
 				syms = syms_cache__get_syms(syms_cache, k->pid);
 			}
-			if (bpf_map_lookup_elem(luafd, &k->user_stack_id, &lua_stack_backtrace) == 0)
-			{
-				printf("loaded lua stack trace count %d\n", lua_stack_backtrace.deepth);
-			} else {
-				lua_stack_backtrace = (struct lua_stack_func){0};
-			}
 		}
 
 		if (!env.user_stacks_only && k->kern_stack_id >= 0)
@@ -468,11 +461,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					for (j = nr_uip - 1; j >= 0; j--)
 					{
 						sym = syms__map_addr(syms, uip[j]);
-						if (sym) {
-							printf(";%s", sym ? sym->name : "[unknown]");
-						} else if (lua_stack_backtrace.deepth > 0) {
-							printf(";%s", lua_stack_backtrace.name[--lua_stack_backtrace.deepth]);
-						}
+						printf(";%s", sym ? sym->name : "[unknown]");
 					}
 				}
 			}
@@ -558,7 +547,7 @@ cleanup:
 
 static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
-	const struct nginx_event *e = data;
+	const struct lua_stack_event *e = data;
 	struct tm *tm;
 	char ts[16];
 	time_t t;
@@ -566,8 +555,8 @@ static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-	printf("%-8s %-7d %-10.3f %s\n",
-		   ts, e->pid, (double)e->time / 1000000, e->name);
+	printf("%-8s %-7d %-7d %-7d %s\n",
+		   ts, e->pid, e->level, e->user_stack_id, e->name);
 }
 
 static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -771,7 +760,7 @@ int main(int argc, char **argv)
 	 * We'll get sleep interrupted when someone presses Ctrl-C (which will
 	 * be "handled" with noop by sig_handler).
 	 */
-	//sleep(env.duration);
+	// sleep(env.duration);
 	while (!exiting)
 	{
 		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);

@@ -24,14 +24,6 @@ struct
 	__uint(max_entries, MAX_ENTRIES);
 } counts SEC(".maps");
 
-struct
-{
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u32);
-	__type(value,struct lua_stack_func);
-	__uint(max_entries, MAX_ENTRIES);
-} lua_stack_bt SEC(".maps");
-
 #define MAX_ENTRIES 10240
 
 struct
@@ -39,7 +31,7 @@ struct
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, __u32);
-	__type(value, struct nginx_event);
+	__type(value, struct lua_stack_event);
 } starts_nginx SEC(".maps");
 
 struct
@@ -68,63 +60,21 @@ static __always_inline bool is_kernel_addr(u64 addr)
 }
 #endif /* __TARGET_ARCH_arm64 || __TARGET_ARCH_x86 */
 
-/* Get frame corresponding to a level. */
-static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
-{
-	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
-
-	int i = 0;
-	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
-	//bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-	/* Traverse frames backwards. */
-	for (; i < 10 && frame > bot; i++)
-	{
-		// bpf_printk("loop %d\n", i);
-		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-		if (frame_gc(frame) == obj2gco(L))
-		{
-			//bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
-			level++; /* Skip dummy frames. See lj_err_optype_call(). */
-		}
-		if (level-- == 0)
-		{
-			*size = (nextframe - frame);
-			//bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-			//bpf_printk("size=%d, frame=%p\n", size, frame);
-			return frame; /* Level found. */
-		}
-		nextframe = frame;
-		if (frame_islua(frame))
-		{
-			frame = frame_prevl(frame);
-		}
-		else
-		{
-			if (frame_isvarg(frame))
-				level++; /* Skip vararg pseudo-frame. */
-			frame = frame_prevd(frame);
-		}
-	}
-	//bpf_printk("Level not found\n");
-	*size = level;
-	return NULL; /* Level not found. */
-}
-
 static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_id)
-{	
+{
 	if (stack_id == 0)
 	{
 		return 0;
 	}
-	struct nginx_event *eventp;
+	struct lua_stack_event *eventp;
 
 	eventp = bpf_map_lookup_elem(&starts_nginx, &tid);
 	if (!eventp)
 		return 0;
 
 	/* update time from timestamp to delta */
-	eventp->time = bpf_ktime_get_ns() - eventp->time;
-	bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
+	// eventp->time = bpf_ktime_get_ns() - eventp->time;
+	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 
 	lua_State *L = eventp->L;
 	if (!L)
@@ -142,13 +92,12 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	// bpf_printk("L max stack %p.", tvref(BPF_PROBE_READ_USER(L, maxstack)));
 	// bpf_printk("prevd frame %p.", frame_prevd(frame));
 	// bpf_printk("prevl frame %p.\n", frame_prevl(frame));
-	struct lua_stack_func stack_func = {};
 	int level = 1, count = 0;
 
 	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
-	//bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+	// bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 	/* Traverse frames backwards. */
 	for (; i < 10 && frame > bot; i++)
 	{
@@ -156,14 +105,14 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 		if (frame_gc(frame) == obj2gco(L))
 		{
-			//bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
+			// bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
 			level++; /* Skip dummy frames. See lj_err_optype_call(). */
 		}
 		if (level-- == 0)
 		{
 			// *size = (nextframe - frame);
-			//bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-			//bpf_printk("size=%d, frame=%p\n", size, frame);
+			// bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+			// bpf_printk("size=%d, frame=%p\n", size, frame);
 			// return frame; /* Level found. */
 			if (!frame)
 				continue;
@@ -177,11 +126,11 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 			const char *src = strdata(name);
 			if (!src)
 				continue;
-			bpf_probe_read_user_str(stack_func.name[i], sizeof(stack_func.name[0]), src);
-			bpf_printk("level= %d, fn_name=%s\n", i, src);
+			bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
+			bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
+			bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 			level++;
 			count++;
-			stack_func.deepth = count;
 		}
 		nextframe = frame;
 		if (frame_islua(frame))
@@ -272,7 +221,7 @@ static int probe_entry_nginx(struct pt_regs *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
-	// struct nginx_event event = {};
+	// struct lua_stack_event event = {};
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
@@ -301,11 +250,11 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
-	struct nginx_event event = {};
+	struct lua_stack_event event = {};
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
-	event.time = bpf_ktime_get_ns();
+	// event.time = bpf_ktime_get_ns();
 	event.pid = pid;
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
 	event.L = (void *)PT_REGS_PARM1(ctx);
@@ -313,7 +262,6 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
 	return 0;
 }
-
 
 SEC("kprobe/handle_entry_lua")
 int handle_entry_lua(struct pt_regs *ctx)
