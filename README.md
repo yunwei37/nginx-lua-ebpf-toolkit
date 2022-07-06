@@ -116,8 +116,8 @@ Note currently this is hardcoded in `bpftools/profile_nginx_lua/profile.c`:
 
 bpftools/profile_nginx_lua/profile.c:569
 ```c
-char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
-char *lua_path = "/usr/local/openresty/luajit/lib/libluajit-5.1.so.2.1.0";
+char *nginx_path = "/usr/local/openresty-debug/nginx/sbin/nginx";
+char *lua_path = "/usr/local/openresty-debug/luajit/lib/libluajit-5.1.so.2.1.0";
 ```
 
 this is used for uprobe to find function offset.

@@ -50,9 +50,9 @@ static struct env
 } env = {
 	.pid = -1,
 	.tid = -1,
-	.stack_storage_size = 1024,
+	.stack_storage_size = 8192,
 	.perf_max_stack_depth = 127,
-	.duration = 99999999,
+	.duration = 3,
 	.freq = 1,
 	.sample_freq = 49,
 	.cpu = -1,
@@ -365,7 +365,8 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 	const struct ksym *ksym;
 	const struct syms *syms = NULL;
 	const struct sym *sym;
-	int i, j, cfd, sfd;
+	int i, j, cfd, sfd, luafd;
+	struct lua_stack_func lua_stack_backtrace = {0};
 	__u32 nr_count;
 	struct key_t *k;
 	__u64 v;
@@ -395,6 +396,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 
 	cfd = bpf_map__fd(obj->maps.counts);
 	sfd = bpf_map__fd(obj->maps.stackmap);
+	luafd = bpf_map__fd(obj->maps.lua_stack_bt);
 
 	nr_count = MAX_ENTRIES;
 	if (!read_counts_map(cfd, counts, &nr_count))
@@ -432,6 +434,12 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					nr_uip++;
 				syms = syms_cache__get_syms(syms_cache, k->pid);
 			}
+			if (bpf_map_lookup_elem(luafd, &k->user_stack_id, &lua_stack_backtrace) == 0)
+			{
+				printf("loaded lua stack trace count %d\n", lua_stack_backtrace.deepth);
+			} else {
+				lua_stack_backtrace = (struct lua_stack_func){0};
+			}
 		}
 
 		if (!env.user_stacks_only && k->kern_stack_id >= 0)
@@ -460,7 +468,11 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					for (j = nr_uip - 1; j >= 0; j--)
 					{
 						sym = syms__map_addr(syms, uip[j]);
-						printf(";%s", sym ? sym->name : "[unknown]");
+						if (sym) {
+							printf(";%s", sym ? sym->name : "[unknown]");
+						} else if (lua_stack_backtrace.deepth > 0) {
+							printf(";%s", lua_stack_backtrace.name[--lua_stack_backtrace.deepth]);
+						}
 					}
 				}
 			}
@@ -565,9 +577,8 @@ static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 
 static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 {
-	int err;
-	char *nginx_path = "/usr/local/openresty/nginx/sbin/nginx";
-	char *lua_path = "/usr/local/openresty/luajit/lib/libluajit-5.1.so.2.1.0";
+	char *nginx_path = "/usr/local/openresty-debug/nginx/sbin/nginx";
+	char *lua_path = "/usr/local/openresty-debug/luajit/lib/libluajit-5.1.so.2.1.0";
 
 	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_del_thread");
 	if (func_off < 0)
@@ -760,7 +771,7 @@ int main(int argc, char **argv)
 	 * We'll get sleep interrupted when someone presses Ctrl-C (which will
 	 * be "handled" with noop by sig_handler).
 	 */
-	// sleep(env.duration);
+	//sleep(env.duration);
 	while (!exiting)
 	{
 		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);

@@ -24,6 +24,14 @@ struct
 	__uint(max_entries, MAX_ENTRIES);
 } counts SEC(".maps");
 
+struct
+{
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+	__type(value,struct lua_stack_func);
+	__uint(max_entries, MAX_ENTRIES);
+} lua_stack_bt SEC(".maps");
+
 #define MAX_ENTRIES 10240
 
 struct
@@ -81,8 +89,7 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 		if (level-- == 0)
 		{
 			*size = (nextframe - frame);
-			//size_t i_ci = (size << 16) + (frame - bot) / sizeof(TValue);
-			bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+			//bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 			//bpf_printk("size=%d, frame=%p\n", size, frame);
 			return frame; /* Level found. */
 		}
@@ -103,60 +110,12 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 	return NULL; /* Level not found. */
 }
 
-static void lua_getinfo(lua_State *L, size_t i_ci)
-{
-	size_t offset = (i_ci & 0xffff);
-	if (offset == 0)
+static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_id)
+{	
+	if (stack_id == 0)
 	{
-		bpf_printk("assertion failed: offset == 0: i_ci=%x", i_ci);
-		return;
+		return 0;
 	}
-
-	cTValue *frame, *nextframe;
-	frame = tvref(BPF_PROBE_READ_USER(L, stack)) + offset;
-
-	size_t size = (i_ci >> 16);
-	if (size)
-	{
-		nextframe = frame + size;
-	}
-	else
-	{
-		nextframe = 0;
-	}
-	bpf_printk("getinfo:frame=%p, nextframe=%p\n", frame, nextframe);
-	cTValue *maxstack = tvref(BPF_PROBE_READ_USER(L, maxstack));
-
-	if (!(frame <= maxstack && (!nextframe || nextframe <= maxstack)))
-	{
-		bpf_printk("assertion failed: frame <= maxstack && (!nextframe || nextframe <= maxstack)\n");
-		return;
-	}
-
-	GCfunc *fn = frame_func(frame);
-	GCfuncC c;
-	bpf_probe_read_user(&c, sizeof(c), &fn->c);
-	if (!(c.gct == 8))
-	{
-		bpf_printk("assertion failed: fn->c.gct == ~LJ_TFUNC: %d", c.gct);
-		return;
-	}
-
-	// isluafunc(fn)
-	if (c.ffid == FF_LUA)
-	{
-		GCproto *pt = funcproto(fn);
-		BCLine firstline;
-		bpf_probe_read_user(&firstline, sizeof(firstline), &pt->firstline);
-		GCstr *name = proto_chunkname(pt); /* GCstr *name */
-		const char *src = strdata(name);
-		bpf_printk("src=%s\n", src);
-		return;
-	}
-}
-
-static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
-{
 	struct nginx_event *eventp;
 
 	eventp = bpf_map_lookup_elem(&starts_nginx, &tid);
@@ -171,9 +130,9 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	if (!L)
 		return 0;
 
-	cTValue *frame = NULL;
-	int size;
-	frame = BPF_PROBE_READ_USER(L, base);
+	// cTValue *frame = NULL;
+	// int size;
+	// frame = BPF_PROBE_READ_USER(L, base);
 	// bpf_printk("perf get lua_state %p", L);
 	// bpf_printk("L->status %d", BPF_PROBE_READ_USER(L, status));
 	// bpf_printk("L->base %p. is lua %d, is varg %d", frame, frame_islua(frame), frame_isvarg(frame));
@@ -183,25 +142,60 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid)
 	// bpf_printk("L max stack %p.", tvref(BPF_PROBE_READ_USER(L, maxstack)));
 	// bpf_printk("prevd frame %p.", frame_prevd(frame));
 	// bpf_printk("prevl frame %p.\n", frame_prevl(frame));
+	struct lua_stack_func stack_func = {};
+	int level = 1, count = 0;
 
-	for (int i = 1; i < 15; ++i) {
-		frame = lj_debug_frame(L, i, &size);
-		if (!frame)
-			continue;
-		GCfunc *fn = frame_func(frame);
-		if (!fn)
-			continue;
-		GCproto *pt = funcproto(fn);
-		if (!pt)
-			continue;
-		GCstr *name = proto_chunkname(pt); /* GCstr *name */
-		const char *src = strdata(name);
-		if (!src)
-			continue;
-		char* fn_name[16];
-		bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
-		bpf_printk("level= %d, fn_name=%s\n", i, src);
+	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
+	int i = 0;
+	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
+	//bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+	/* Traverse frames backwards. */
+	for (; i < 10 && frame > bot; i++)
+	{
+		// bpf_printk("loop %d\n", i);
+		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+		if (frame_gc(frame) == obj2gco(L))
+		{
+			//bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
+			level++; /* Skip dummy frames. See lj_err_optype_call(). */
+		}
+		if (level-- == 0)
+		{
+			// *size = (nextframe - frame);
+			//bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
+			//bpf_printk("size=%d, frame=%p\n", size, frame);
+			// return frame; /* Level found. */
+			if (!frame)
+				continue;
+			GCfunc *fn = frame_func(frame);
+			if (!fn)
+				continue;
+			GCproto *pt = funcproto(fn);
+			if (!pt)
+				continue;
+			GCstr *name = proto_chunkname(pt); /* GCstr *name */
+			const char *src = strdata(name);
+			if (!src)
+				continue;
+			bpf_probe_read_user_str(stack_func.name[i], sizeof(stack_func.name[0]), src);
+			bpf_printk("level= %d, fn_name=%s\n", i, src);
+			level++;
+			count++;
+			stack_func.deepth = count;
+		}
+		nextframe = frame;
+		if (frame_islua(frame))
+		{
+			frame = frame_prevl(frame);
+		}
+		else
+		{
+			if (frame_isvarg(frame))
+				level++; /* Skip vararg pseudo-frame. */
+			frame = frame_prevd(frame);
+		}
 	}
+	// bpf_map_update_elem(&lua_stack_bt, &stack_id, &stack_func, BPF_ANY);
 	// frame = lj_debug_frame(L, 1, &size);
 	// //bpf_printk("size=%d\n", size);
 	// //lua_getinfo(L, i_ci);
@@ -263,7 +257,7 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	if (valp)
 		__sync_fetch_and_add(valp, 1);
 
-	fix_lua_stack(ctx, tid);
+	fix_lua_stack(ctx, tid, key.user_stack_id);
 
 	return 0;
 }
@@ -317,7 +311,6 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	event.L = (void *)PT_REGS_PARM1(ctx);
 	// bpf_printk("lua_state %p\n", event.L);
 	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
-	bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 

@@ -8,6 +8,8 @@ cat /usr/local/openresty/nginx/logs/nginx.pid
 
 ```
 sudo ./profile -f -F 499 -p [pid] > a.bt
+
+sudo cat /sys/kernel/debug/tracing/trace_pipe
 ```
 
 ```

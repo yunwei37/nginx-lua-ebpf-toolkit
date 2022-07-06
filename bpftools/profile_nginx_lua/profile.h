@@ -23,4 +23,11 @@ struct nginx_event
 	void *L;
 };
 
+struct lua_stack_func
+{
+	__u64 ip;
+	__u8 deepth;
+	char name[16][16];
+};
+
 #endif /* __PROFILE_H */
