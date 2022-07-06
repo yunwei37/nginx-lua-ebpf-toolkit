@@ -9,8 +9,8 @@
 
 struct key_t
 {
-	__u32 pid;
-	__u64 kernel_ip;
+	unsigned int pid;
+	unsigned long long kernel_ip;
 	int user_stack_id;
 	int kern_stack_id;
 	char name[TASK_COMM_LEN];
@@ -18,18 +18,11 @@ struct key_t
 
 struct lua_stack_event
 {
-	__u32 pid;
+	unsigned int pid;
 	int  user_stack_id;
 	int  level;
 	char name[HOST_LEN];
 	void *L;
-};
-
-struct lua_stack_func
-{
-	__u64 ip;
-	__u8 deepth;
-	char name[16][16];
 };
 
 #endif /* __PROFILE_H */

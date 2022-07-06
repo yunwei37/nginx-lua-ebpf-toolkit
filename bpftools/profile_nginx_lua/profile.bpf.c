@@ -75,7 +75,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	/* update time from timestamp to delta */
 	// eventp->time = bpf_ktime_get_ns() - eventp->time;
 	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
-
+	eventp->user_stack_id = stack_id;
 	lua_State *L = eventp->L;
 	if (!L)
 		return 0;
@@ -128,6 +128,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 				continue;
 			bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
 			bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
+			eventp->level = count;
 			bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 			level++;
 			count++;

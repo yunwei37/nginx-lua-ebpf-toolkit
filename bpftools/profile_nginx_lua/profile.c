@@ -18,6 +18,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "profile.h"
+#include "lua_stacks_helper.h"
 #include "profile.skel.h"
 #include "trace_helpers.h"
 #include "uprobe_helpers.h"
@@ -30,6 +31,7 @@ struct key_ext_t
 };
 
 bool exiting = false;
+struct lua_stack_map *lua_bt_map = NULL;
 
 static struct env
 {
@@ -365,8 +367,8 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 	const struct ksym *ksym;
 	const struct syms *syms = NULL;
 	const struct sym *sym;
-	int i, j, cfd, sfd, luafd;
-	struct lua_stack_func lua_stack_backtrace = {0};
+	int i, j, cfd, sfd;
+	struct stack_backtrace lua_bt = {0};
 	__u32 nr_count;
 	struct key_t *k;
 	__u64 v;
@@ -433,6 +435,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					nr_uip++;
 				syms = syms_cache__get_syms(syms_cache, k->pid);
 			}
+			get_lua_stack_backtrace(lua_bt_map, k->user_stack_id, &lua_bt);
 		}
 
 		if (!env.user_stacks_only && k->kern_stack_id >= 0)
@@ -458,10 +461,25 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					printf(";[Missed User Stack]");
 				if (syms)
 				{
+					int count = 0;
 					for (j = nr_uip - 1; j >= 0; j--)
 					{
 						sym = syms__map_addr(syms, uip[j]);
-						printf(";%s", sym ? sym->name : "[unknown]");
+						if (sym)
+						{
+							printf(";%s", sym ? sym->name : "[unknown]");
+						}
+						else
+						{
+							if (count < lua_bt.level_size)
+							{
+								printf(";%s", lua_bt.stack[count++].name);
+							}
+							else if (lua_bt.level_size == 0)
+							{
+								printf(";[unknown]");
+							}
+						}
 					}
 				}
 			}
@@ -547,6 +565,7 @@ cleanup:
 
 static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
+	int err;
 	const struct lua_stack_event *e = data;
 	struct tm *tm;
 	char ts[16];
@@ -555,8 +574,11 @@ static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-	printf("%-8s %-7d %-7d %-7d %s\n",
-		   ts, e->pid, e->level, e->user_stack_id, e->name);
+	err = insert_lua_stack_map(lua_bt_map, e);
+	if (err)
+		fprintf(stderr, "failed to insert lua stack map\n");
+	// printf("%-8s %-7d %-7d %-7d %s\n",
+	// 	   ts, e->pid, e->level, e->user_stack_id, e->name);
 }
 
 static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -710,6 +732,9 @@ int main(int argc, char **argv)
 	if (err)
 		goto cleanup;
 
+	lua_bt_map = init_lua_stack_map();
+	if (!lua_bt_map)
+		goto cleanup;
 	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.events_nginx), PERF_BUFFER_PAGES,
 											  handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
 	if (!pb)

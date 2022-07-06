@@ -83,10 +83,13 @@ trace_helpers.o: trace_helpers.c
 uprobe_helpers.o: uprobe_helpers.c 
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
+lua_stacks_helper.o: lua_stacks_helper.cpp
+	$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.cpp,$^) -o $@
+
 # Build application binary
-$(APPS): %: $(OUTPUT)/%.o uprobe_helpers.o trace_helpers.o $(LIBBPF_OBJ) | $(OUTPUT)
+$(APPS): %: $(OUTPUT)/%.o uprobe_helpers.o trace_helpers.o lua_stacks_helper.o $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+	$(Q)$(CXX) $(CFLAGS) $^ -lelf -lz -o $@
 
 # delete failed targets
 .DELETE_ON_ERROR:
