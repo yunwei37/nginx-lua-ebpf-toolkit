@@ -1,40 +1,53 @@
-# Apache APISIX profile 工具
+# ebpf-based lua profile tools
 
-## 项目产出要求：
+Use ebpf to generate lua flamegraphs:
 
-使用eBPF捕获和解析 `Apache APISIX` 中的 lua 调用堆栈信息，对其进行汇总并生成cpu火焰图：
-- 利用eBPF同时捕获和解析C和Lua混合调用堆栈信息，对其进行总结，生成cpu火焰图。
-- 支持获取在Docker中运行的 `Apache APISIX` 进程
-- 支持获取 Apache APISIX Openresty luajit 32/luajit 64 模式
-
-## 项目完成进度
-
-
-- [X] 获取 docker 中运行的 APISIX 和 Openresty / nginx 进程 PID `2022/05`
-- [X] 利用 ebpf/BCC 生成火焰图 `2022/05`
-- [X] 利用 libbpf 生成 Openresty/nginx/lua 火焰图 `2022/06/04`
-- [X] 在 libbpf 中利用 uprobe 获取 lua status 堆栈信息 `2022/06/08`
-- [X] 在 profile 的同时获取 lua status stack trace 信息
-- [ ] 把得到的函数信息在最后生成火焰图的时候和原先的 c 函数信息综合起来
-- [ ] 整理工具
+- trace lua stack in kernel space without modify any code
+- support `luajit 32/luajit 64`
+- working well on new kernel(>=5.13)
+- faster speed
+- run only small binary without any dependencies
 
 ## probe nginx lua
 
 see: bpftools/profile_nginx_lua/profile.bpf.c
 
-to get stack frame of lua:
+first, we use `uprobe` in ebpf to attach to `libluajit.so` get the lua_State:
 
-this is nearly the same sa `lj_debug_frame` func in `lj_debug.c` from luajit source code
 ```c
-/* Get frame corresponding to a level. */
-static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
+static int probe_entry_lua(struct pt_regs *ctx)
 {
-	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
+	if (!PT_REGS_PARM1(ctx))
+		return 0;
 
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 pid = pid_tgid >> 32;
+	__u32 tid = (__u32)pid_tgid;
+	struct lua_stack_event event = {};
+
+	if (targ_pid != -1 && targ_pid != pid)
+		return 0;
+	// event.time = bpf_ktime_get_ns();
+	event.pid = pid;
+	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
+	event.L = (void *)PT_REGS_PARM1(ctx);
+	// bpf_printk("lua_state %p\n", event.L);
+	bpf_map_update_elem(&lua_events, &tid, &event, BPF_ANY);
+	return 0;
+}
+```
+
+to get stack frame of lua, it uses a loop to backtrace the lua vm stack and find all information of functions:
+
+see the `fix_lua_stack` function:
+```c
+	....
+	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
 	/* Traverse frames backwards. */
-	for (; i < 10 && frame > bot; i++)
+	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 12
+	for (; i < 12 && frame > bot; i++)
 	{
 		if (frame_gc(frame) == obj2gco(L))
 		{
@@ -42,9 +55,14 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 		}
 		if (level-- == 0)
 		{
-			*size = (nextframe - frame);
-			bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-			return frame; /* Level found. */
+			level++;
+			// *size = (nextframe - frame);
+			/* Level found. */
+			if (lua_get_funcdata(ctx, frame, eventp, count) != 0)
+			{
+				continue;
+			}
+			count++;
 		}
 		nextframe = frame;
 		if (frame_islua(frame))
@@ -58,36 +76,84 @@ static cTValue * lj_debug_frame(lua_State *L, int level, int *size)
 			frame = frame_prevd(frame);
 		}
 	}
-	*size = level;
-	return NULL; /* Level not found. */
-}
+	....
+
 ```
 
-to print function name of lua:
+after that, it gets the function data send the function data to user space:
+
 ```c
-	for (int i = 1; i < 15; ++i) {
-		frame = lj_debug_frame(L, i, &size);
-		if (!frame)
-			continue;
-		GCfunc *fn = frame_func(frame);
-		if (!fn)
-			continue;
+static inline int lua_get_funcdata(struct bpf_perf_event_data *ctx, cTValue *frame, struct lua_stack_event *eventp, int level)
+{
+	if (!frame)
+		return -1;
+	GCfunc *fn = frame_func(frame);
+	if (!fn)
+		return -1;
+	if (isluafunc(fn))
+	{
+		eventp->type = FUNC_TYPE_LUA;
 		GCproto *pt = funcproto(fn);
 		if (!pt)
-			continue;
+			return -1;
+		eventp->ffid = BPF_PROBE_READ_USER(pt, firstline);
 		GCstr *name = proto_chunkname(pt); /* GCstr *name */
 		const char *src = strdata(name);
 		if (!src)
-			continue;
-		char* fn_name[16];
-		bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
-		bpf_printk("level= %d, fn_name=%s\n", i, src);
+			return -1;
+		bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
+		bpf_printk("level= %d, fn_name=%s\n", level, eventp->name);
 	}
+	else if (iscfunc(fn))
+	{
+		eventp->type = FUNC_TYPE_C;
+		eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
+	}
+	else if (isffunc(fn))
+	{
+		eventp->type = FUNC_TYPE_F;
+		eventp->ffid = BPF_PROBE_READ_USER(fn, c.ffid);
+	}
+	eventp->level = level;
+	bpf_perf_event_output(ctx, &lua_event_output, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
+	return 0;
+}
 ```
 
-note the loop counter here is smaller because of ebpf verifier. Maybe we can optimize it in the future, it's a O(n^2) nested loop.
+in user space, it will use the `user_stack_id` to mix the lua stack with the original user and kernel stack:
 
-reference:
+see `bpftools/profile_nginx_lua/profile.c: print_user_stack_with_lua`
+```
+				....
+				const struct lua_stack_event* eventp = &(lua_bt->stack[count]);
+				if (eventp->type == FUNC_TYPE_LUA)
+				{
+					if (eventp->ffid) {
+						printf(";L:%s:%d", eventp->name, eventp->ffid);
+					} else {
+						printf(";L:%s", eventp->name);
+					}
+				}
+				else if (eventp->type == FUNC_TYPE_C)
+				{
+					sym = syms__map_addr(syms, (unsigned long)eventp->funcp);
+					if (sym)
+					{
+						printf(";C:%s", sym ? sym->name : "[unknown]");
+					}
+				}
+				else if (eventp->type == FUNC_TYPE_F)
+				{
+					printf(";builtin#%d", eventp->ffid);
+				}
+				....
+```
+
+If the lua stack output `user_stack_id` matches the original `user_stack_id`, this means the stack is a lua stack. Then, we replace the `[unknown]` function whose uip insides the luajit vm function range with our lua stack. This may not be totally correct, but it works for now. After printing the stack, we can use 
+
+### reference
+
+for reference, I looked into the debug functions of lua vm:
 
 ```c
 LJ_FUNC void lj_debug_dumpstack(lua_State *L, SBuf *sb, const char *fmt,
@@ -103,9 +169,9 @@ and:
 
 ### to run:
 
-for lua struct defination, see: `bpftools/profile_nginx_lua/lua_state.h`, it's copied from luajit headers.
+for lua data structure definition, see: `bpftools/profile_nginx_lua/lua_state.h`, it's copied from `luajit` headers.
 
-we can determine the luajit 32/64 from:
+we can determine the `luajit gc32/64` from:
 
 bpftools/profile_nginx_lua/lua_state.h:9
 ```c
@@ -124,11 +190,11 @@ this is used for uprobe to find function offset.
 
 the openresty used and tested is from `https://openresty.org/en/benchmark.html`
 
-## run nginx prob
+## run nginx probe
 
 sudo /usr/bin/python /home/yunwei/coding/ebpf/nginx_uprobe.py
 
-## openresty
+## test when running benchmark
 
 basic benchmark：
 
@@ -146,9 +212,37 @@ nginx -p `pwd`/ -c conf/nginx.conf
 curl http://localhost:8080/
 ```
 
-## ebpf for uprobe
+or using APISIX performance test: 
 
-- https://blog.csdn.net/github_36774378/article/details/112259337 聊聊风口上的 eBPF
-- https://cloud.tencent.com/developer/article/1037840 openresty源码剖析——lua代码的加载
-- http://www.javashuo.com/article/p-wqgnoodo-kn.html 经过lua栈了解lua与c的交互
-- https://ty-chen.github.io/lua-vm-md/
+```
+git clone https://github.com/apache/apisix
+cd apisix
+sudo apt-get install -y libpcre3 libpcre3-dev
+sudo apt-get install -y openssl libssl-dev unzip zlib*
+sudo ./ci/performance_test.sh install_dependencies
+sudo ./ci/performance_test.sh install_wrk2
+sudo ./ci/performance_test.sh install_stap_tools
+./ci/performance_test.sh run_performance_test
+```
+
+## for APISIX OSPP
+
+### 项目产出要求：
+
+使用eBPF捕获和解析 `Apache APISIX` 中的 lua 调用堆栈信息，对其进行汇总并生成cpu火焰图：
+- 利用eBPF同时捕获和解析C和Lua混合调用堆栈信息，对其进行总结，生成cpu火焰图。
+- 支持获取在Docker中运行的 `Apache APISIX` 进程
+- 支持获取 Apache APISIX Openresty luajit 32/luajit 64 模式
+
+### 项目完成进度
+
+
+- [X] 获取 docker 中运行的 APISIX 和 Openresty / nginx 进程 PID `2022/05`
+- [X] 利用 ebpf/BCC 生成火焰图 `2022/05`
+- [X] 利用 libbpf 生成 Openresty/nginx/lua 火焰图 `2022/06/04`
+- [X] 在 libbpf 中利用 uprobe 获取 lua status 堆栈信息 `2022/06/08`
+- [X] 在 profile 的同时获取 lua status stack trace 信息 `2022/06/23`
+- [X] 把得到的函数信息在最后生成火焰图的时候和原先的 c 函数信息综合起来 `2022/06/23`
+- [X] 整理工具
+- [ ] more with other tools
+
