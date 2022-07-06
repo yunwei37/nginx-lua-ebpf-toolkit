@@ -26,20 +26,24 @@ struct
 
 #define MAX_ENTRIES 10240
 
+// for collecting lua stack trace function name
+// and pass the pointer of Lua_state to perf event
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, __u32);
 	__type(value, struct lua_stack_event);
-} starts_nginx SEC(".maps");
+} lua_events SEC(".maps");
 
+// output the lua stack to user space because we cannot keep all of them in 
+// ebpf maps
 struct
 {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(key_size, sizeof(__u32));
 	__uint(value_size, sizeof(__u32));
-} events_nginx SEC(".maps");
+} lua_event_output SEC(".maps");
 
 /*
  * If PAGE_OFFSET macro is not available in vmlinux.h, determine ip whose MSB
@@ -60,6 +64,42 @@ static __always_inline bool is_kernel_addr(u64 addr)
 }
 #endif /* __TARGET_ARCH_arm64 || __TARGET_ARCH_x86 */
 
+static inline int lua_get_funcdata(struct bpf_perf_event_data *ctx, cTValue *frame, struct lua_stack_event *eventp, int level)
+{
+	if (!frame)
+		return -1;
+	GCfunc *fn = frame_func(frame);
+	if (!fn)
+		return -1;
+	if (isluafunc(fn))
+	{
+		eventp->type = FUNC_TYPE_LUA;
+		GCproto *pt = funcproto(fn);
+		if (!pt)
+			return -1;
+		eventp->ffid = BPF_PROBE_READ_USER(pt, firstline);
+		GCstr *name = proto_chunkname(pt); /* GCstr *name */
+		const char *src = strdata(name);
+		if (!src)
+			return -1;
+		bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
+		bpf_printk("level= %d, fn_name=%s\n", level, eventp->name);
+	}
+	else if (iscfunc(fn))
+	{
+		eventp->type = FUNC_TYPE_C;
+		eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
+	}
+	else if (isffunc(fn))
+	{
+		eventp->type = FUNC_TYPE_F;
+		eventp->ffid = BPF_PROBE_READ_USER(fn, c.ffid);
+	}
+	eventp->level = level;
+	bpf_perf_event_output(ctx, &lua_event_output, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
+	return 0;
+}
+
 static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_id)
 {
 	if (stack_id == 0)
@@ -68,83 +108,39 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	}
 	struct lua_stack_event *eventp;
 
-	eventp = bpf_map_lookup_elem(&starts_nginx, &tid);
+	eventp = bpf_map_lookup_elem(&lua_events, &tid);
 	if (!eventp)
 		return 0;
 
-	/* update time from timestamp to delta */
-	// eventp->time = bpf_ktime_get_ns() - eventp->time;
-	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 	eventp->user_stack_id = stack_id;
 	lua_State *L = eventp->L;
 	if (!L)
 		return 0;
 
-	// cTValue *frame = NULL;
-	// int size;
-	// frame = BPF_PROBE_READ_USER(L, base);
-	// bpf_printk("perf get lua_state %p", L);
-	// bpf_printk("L->status %d", BPF_PROBE_READ_USER(L, status));
-	// bpf_printk("L->base %p. is lua %d, is varg %d", frame, frame_islua(frame), frame_isvarg(frame));
-	// bpf_printk("L->stack %p", tvref(BPF_PROBE_READ_USER(L, stack)));
-	// bpf_printk("L->stacksize %x", BPF_PROBE_READ_USER(L, stacksize));
-	// bpf_printk("L->top %p", BPF_PROBE_READ_USER(L, top));
-	// bpf_printk("L max stack %p.", tvref(BPF_PROBE_READ_USER(L, maxstack)));
-	// bpf_printk("prevd frame %p.", frame_prevd(frame));
-	// bpf_printk("prevl frame %p.\n", frame_prevl(frame));
+	// start from the top of the stack and trace back
+	// count the number of function calls founded
 	int level = 1, count = 0;
 
 	cTValue *frame, *nextframe, *bot = tvref(BPF_PROBE_READ_USER(L, stack)) + LJ_FR2;
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
-	// bpf_printk("lj_debug_frame start: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 	/* Traverse frames backwards. */
+	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 12
 	for (; i < 12 && frame > bot; i++)
 	{
-		// bpf_printk("loop %d\n", i);
-		// bpf_printk("lj_debug_frame loop: frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
 		if (frame_gc(frame) == obj2gco(L))
 		{
-			// bpf_printk("frame_gc == obj2gco. Skip dummy frames. See lj_meta_call.\n");
 			level++; /* Skip dummy frames. See lj_err_optype_call(). */
 		}
 		if (level-- == 0)
 		{
 			level++;
 			// *size = (nextframe - frame);
-			// bpf_printk("Level found, frame=%p, nextframe=%p, bot=%p\n", frame, nextframe, bot);
-			// bpf_printk("size=%d, frame=%p\n", size, frame);
-			// return frame; /* Level found. */
-			if (!frame)
+			/* Level found. */
+			if (lua_get_funcdata(ctx, frame, eventp, count) != 0)
+			{
 				continue;
-			GCfunc *fn = frame_func(frame);
-			if (!fn)
-				continue;
-			if (isluafunc(fn))
-			{
-				eventp->type = FUNC_TYPE_LUA;
-				GCproto *pt = funcproto(fn);
-				if (!pt)
-					continue;
-				GCstr *name = proto_chunkname(pt); /* GCstr *name */
-				const char *src = strdata(name);
-				if (!src)
-					continue;
-				bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
-				bpf_printk("level= %d, fn_name=%s\n", i, eventp->name);
 			}
-			else if (iscfunc(fn))
-			{
-				eventp->type = FUNC_TYPE_C;
-				eventp->funcp = BPF_PROBE_READ_USER(fn, c.f);
-			}
-			else if (isffunc(fn))
-			{
-				eventp->type = FUNC_TYPE_F;
-				eventp->funcp = (void *)BPF_PROBE_READ_USER(fn, c.ffid);
-			}
-			eventp->level = count;
-			bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, eventp, sizeof(*eventp));
 			count++;
 		}
 		nextframe = frame;
@@ -159,19 +155,6 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 			frame = frame_prevd(frame);
 		}
 	}
-	// bpf_map_update_elem(&lua_stack_bt, &stack_id, &stack_func, BPF_ANY);
-	// frame = lj_debug_frame(L, 1, &size);
-	// //bpf_printk("size=%d\n", size);
-	// //lua_getinfo(L, i_ci);
-	// GCfunc *fn = frame_func(frame);
-	// bpf_printk("GCfunc %p\n", fn);
-	// GCproto *pt = funcproto(fn);
-	// bpf_printk("GCproto %p\n", pt);
-	// GCstr *name = proto_chunkname(pt); /* GCstr *name */
-	// const char *src = strdata(name);
-	// char* fn_name[16];
-	// bpf_probe_read_user_str(fn_name, sizeof(fn_name), src);
-	// bpf_printk("fn_name=%s\n", src);
 	return 0;
 }
 
@@ -221,8 +204,10 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	if (valp)
 		__sync_fetch_and_add(valp, 1);
 
-	fix_lua_stack(ctx, tid, key.user_stack_id);
-
+	if (!valp || *valp <= 1){
+		// only get lua stack the first time
+		fix_lua_stack(ctx, tid, key.user_stack_id);
+	}
 	return 0;
 }
 
@@ -242,12 +227,12 @@ static int probe_entry_nginx(struct pt_regs *ctx)
 		return 0;
 	// event.time = bpf_ktime_get_ns();
 	// event.pid = pid;
-	bpf_map_delete_elem(&starts_nginx, &tid);
+	bpf_map_delete_elem(&lua_events, &tid);
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
 	// bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
 	// event.L = (void *)PT_REGS_PARM2(ctx);
 	// bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
-	// bpf_perf_event_output(ctx, &events_nginx, BPF_F_CURRENT_CPU, &event, sizeof(event));
+	// bpf_perf_event_output(ctx, &lua_event_output, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 
@@ -274,7 +259,7 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
 	event.L = (void *)PT_REGS_PARM1(ctx);
 	// bpf_printk("lua_state %p\n", event.L);
-	bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
+	bpf_map_update_elem(&lua_events, &tid, &event, BPF_ANY);
 	return 0;
 }
 

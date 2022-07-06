@@ -26,11 +26,18 @@ enum func_type {
 struct lua_stack_event
 {
 	unsigned int pid;
+	// key for user_stack_id
 	int  user_stack_id;
+	// stack level
 	int  level;
+	// function type
 	int type;
+	// function name
 	char name[HOST_LEN];
 	void *funcp;
+	// line number(lua func) or ffid(ffunc)
+	int ffid;
+	// lua state
 	void *L;
 };
 

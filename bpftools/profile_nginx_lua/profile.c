@@ -361,6 +361,56 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	return true;
 }
 
+static void print_user_stack_with_lua(const struct stack_backtrace *lua_bt, const struct syms *syms, unsigned long *uip, unsigned int nr_uip)
+{
+	const struct sym *sym = NULL;
+	int count = lua_bt->level_size - 1;
+	for (int j = nr_uip - 1; j >= 0; j--)
+	{
+		sym = syms__map_addr(syms, uip[j]);
+		if (sym)
+		{
+			printf(";%s", sym ? sym->name : "[unknown]");
+		}
+		else
+		{
+			if (count >= 0)
+			{
+				const struct lua_stack_event* eventp = &(lua_bt->stack[count]);
+				if (eventp->type == FUNC_TYPE_LUA)
+				{
+					if (eventp->ffid) {
+						printf(";L:%s:%d", eventp->name, eventp->ffid);
+					} else {
+						printf(";L:%s", eventp->name);
+					}
+				}
+				else if (eventp->type == FUNC_TYPE_C)
+				{
+					sym = syms__map_addr(syms, (unsigned long)eventp->funcp);
+					if (sym)
+					{
+						printf(";C:%s", sym ? sym->name : "[unknown]");
+					}
+				}
+				else if (eventp->type == FUNC_TYPE_F)
+				{
+					printf(";builtin#%d", eventp->ffid);
+				}
+				else
+				{
+					// printf(";[unknown]");
+				}
+				count--;
+			}
+			else if (lua_bt->level_size == 0)
+			{
+				// printf(";[unknown]");
+			}
+		}
+	}
+}
+
 static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					  struct profile_bpf *obj)
 {
@@ -461,39 +511,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					printf(";[Missed User Stack]");
 				if (syms)
 				{
-					int count = lua_bt.level_size - 1;
-					for (j = nr_uip - 1; j >= 0; j--)
-					{
-						sym = syms__map_addr(syms, uip[j]);
-						if (sym)
-						{
-							printf(";%s", sym ? sym->name : "[unknown]");
-						}
-						else
-						{
-							if (count >= 0)
-							{
-								if (lua_bt.stack[count].type == FUNC_TYPE_LUA) {
-									printf(";Lua:%s", lua_bt.stack[count].name);
-								} else if (lua_bt.stack[count].type == FUNC_TYPE_C) {
-									sym = syms__map_addr(syms, lua_bt.stack[count].funcp);
-									if (sym)
-									{
-										printf(";C:%s", sym ? sym->name : "[unknown]");
-									}
-								} else if (lua_bt.stack[count].type == FUNC_TYPE_F) {
-									printf(";builtin#%d", (int)lua_bt.stack[count].funcp);
-								} else {
-									//printf(";[unknown]");
-								}
-								count--;
-							}
-							else if (lua_bt.level_size == 0)
-							{
-								//printf(";[unknown]");
-							}
-						}
-					}
+					print_user_stack_with_lua(&lua_bt, syms, uip, nr_uip);
 				}
 			}
 			if (!env.user_stacks_only)
@@ -748,7 +766,7 @@ int main(int argc, char **argv)
 	lua_bt_map = init_lua_stack_map();
 	if (!lua_bt_map)
 		goto cleanup;
-	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.events_nginx), PERF_BUFFER_PAGES,
+	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.lua_event_output), PERF_BUFFER_PAGES,
 											  handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
 	if (!pb)
 	{
@@ -801,6 +819,7 @@ int main(int argc, char **argv)
 	// sleep(env.duration);
 	while (!exiting)
 	{
+		// print perf event to get stack trace
 		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
 		if (err < 0 && err != -EINTR)
 		{
