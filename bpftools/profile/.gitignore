@@ -1,9 +1,0 @@
-/.output
-/tcp
-bootstrap
-profile
-a.bt
-a.cbt
-perf.data*
-trace_helpers.o
-uprobe_helpers.o
