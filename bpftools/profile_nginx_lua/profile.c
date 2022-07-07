@@ -597,7 +597,7 @@ cleanup:
 	free(uip);
 }
 
-static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
+static void handle_lua_stack_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
 	int err;
 	const struct lua_stack_event *e = data;
@@ -615,25 +615,18 @@ static void handle_nginx_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	// 	   ts, e->pid, e->level, e->user_stack_id, e->name);
 }
 
-static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
+static void handle_lua_stack_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 {
 	warn("lost %llu events on CPU #%d\n", lost_cnt, cpu);
 }
 
 static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 {
-	char nginx_path[128];
 	char lua_path[128];
 	if (env.pid)
 	{
 		int res = 0;
 
-		res = get_pid_binary_path(env.pid, nginx_path, sizeof(nginx_path));
-		if (res < 0)
-		{
-			fprintf(stderr, "failed to get binary path for pid %d\n", env.pid);
-			return -1;
-		}
 		res = get_pid_lib_path(env.pid, "luajit-5.1.so", lua_path, sizeof(lua_path));
 		if (res < 0) {
 			fprintf(stderr, "failed to get lib path for pid %d\n", env.pid);
@@ -641,21 +634,7 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 		}
 	}
 
-	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_del_thread");
-	if (func_off < 0)
-	{
-		warn("could not find ngx_http_lua_del_thread in %s\n", nginx_path);
-		return -1;
-	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
-										  -1, nginx_path, func_off);
-	if (!links[0])
-	{
-		warn("failed to attach ngx_http_lua_del_thread: %d\n", -errno);
-		return -1;
-	}
-
-	func_off = get_elf_func_offset(lua_path, "lua_resume");
+	off_t func_off = get_elf_func_offset(lua_path, "lua_resume");
 	if (func_off < 0)
 	{
 		warn("could not find lua_resume in %s\n", lua_path);
@@ -786,7 +765,7 @@ int main(int argc, char **argv)
 	if (!lua_bt_map)
 		goto cleanup;
 	struct perf_buffer *pb = perf_buffer__new(bpf_map__fd(obj->maps.lua_event_output), PERF_BUFFER_PAGES,
-											  handle_nginx_event, handle_nginx_lost_events, NULL, NULL);
+											  handle_lua_stack_event, handle_lua_stack_lost_events, NULL, NULL);
 	if (!pb)
 	{
 		err = -errno;

@@ -212,7 +212,7 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	return 0;
 }
 
-static int probe_entry_nginx(struct pt_regs *ctx)
+static int probe_entry_lua_cancel(struct pt_regs *ctx)
 {
 	if (!PT_REGS_PARM2(ctx))
 		return 0;
@@ -222,25 +222,17 @@ static int probe_entry_nginx(struct pt_regs *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
-	// struct lua_stack_event event = {};
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
-	// event.time = bpf_ktime_get_ns();
-	// event.pid = pid;
 	bpf_map_delete_elem(&lua_events, &tid);
-	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
-	// bpf_probe_read_user(&event.name, sizeof(event.name), (void *)PT_REGS_PARM4(ctx));
-	// event.L = (void *)PT_REGS_PARM2(ctx);
-	// bpf_map_update_elem(&starts_nginx, &tid, &event, BPF_ANY);
-	// bpf_perf_event_output(ctx, &lua_event_output, BPF_F_CURRENT_CPU, &event, sizeof(event));
 	return 0;
 }
 
 SEC("kprobe/handle_entry_lua_cancel")
 int handle_entry_lua_cancel(struct pt_regs *ctx)
 {
-	return probe_entry_nginx(ctx);
+	return probe_entry_lua_cancel(ctx);
 }
 
 static int probe_entry_lua(struct pt_regs *ctx)
@@ -255,11 +247,9 @@ static int probe_entry_lua(struct pt_regs *ctx)
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
-	// event.time = bpf_ktime_get_ns();
+
 	event.pid = pid;
-	// bpf_get_current_comm(&event.comm, sizeof(event.comm));
 	event.L = (void *)PT_REGS_PARM1(ctx);
-	// bpf_printk("lua_state %p\n", event.L);
 	bpf_map_update_elem(&lua_events, &tid, &event, BPF_ANY);
 	return 0;
 }
