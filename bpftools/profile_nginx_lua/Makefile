@@ -80,7 +80,7 @@ $(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT)
 trace_helpers.o: trace_helpers.c 
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
-uprobe_helpers.o: uprobe_helpers.c 
+uprobe_helpers.o: uprobe_helpers.c uprobe_helpers.h
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 lua_stacks_helper.o: lua_stacks_helper.cpp profile.h lua_stacks_helper.h

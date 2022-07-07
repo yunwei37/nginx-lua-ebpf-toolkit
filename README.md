@@ -162,13 +162,6 @@ LJ_FUNC void lj_debug_dumpstack(lua_State *L, SBuf *sb, const char *fmt,
 
 in `lj_debug.h` and `lj_debug.c` from luajit source code: `openresty-1.21.4.1/build/LuaJIT-2.1-20220411/src/lj_debug.h`  
 
-and:
-
-- https://github.com/api7/stapxx/blob/master/tapset/luajit_gc64.sxx
-- https://github.com/openresty/openresty-systemtap-toolkit/blob/master/ngx-sample-lua-bt
-
-### to run:
-
 for lua data structure definition, see: `bpftools/profile_nginx_lua/lua_state.h`, it's copied from `luajit` headers.
 
 we can determine the `luajit gc32/64` from:
@@ -178,17 +171,25 @@ bpftools/profile_nginx_lua/lua_state.h:9
 #define LJ_TARGET_GC64 1
 ```
 
-Note currently this is hardcoded in `bpftools/profile_nginx_lua/profile.c`:
+the openresty used and tested is from `https://openresty.org/en/benchmark.html`, and the `APISIX` used is https://github.com/apache/apisix
 
-bpftools/profile_nginx_lua/profile.c:569
-```c
-char *nginx_path = "/usr/local/openresty-debug/nginx/sbin/nginx";
-char *lua_path = "/usr/local/openresty-debug/luajit/lib/libluajit-5.1.so.2.1.0";
+and:
+
+- https://github.com/api7/stapxx/blob/master/tapset/luajit_gc64.sxx
+- https://github.com/openresty/openresty-systemtap-toolkit/blob/master/ngx-sample-lua-bt
+
+### to run lua profile:
+
+for example:
+
+```bash
+# get nginx pid
+pgrep -P $(cat logs/nginx.pid) -n -f worker
+# sample only user stack and lua stack, use fold output, trace pid 36685 for nginx
+sudo ./profile -f -F 499 -U -p 366865 > a.bt
+# get flamegraph
+cat a.bt | ../../FlameGraph/flamegraph.pl > a.svg
 ```
-
-this is used for uprobe to find function offset.
-
-the openresty used and tested is from `https://openresty.org/en/benchmark.html`
 
 ## run nginx probe
 

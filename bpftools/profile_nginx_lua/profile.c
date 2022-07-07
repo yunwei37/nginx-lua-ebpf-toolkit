@@ -376,12 +376,15 @@ static void print_user_stack_with_lua(const struct stack_backtrace *lua_bt, cons
 		{
 			if (count >= 0)
 			{
-				const struct lua_stack_event* eventp = &(lua_bt->stack[count]);
+				const struct lua_stack_event *eventp = &(lua_bt->stack[count]);
 				if (eventp->type == FUNC_TYPE_LUA)
 				{
-					if (eventp->ffid) {
+					if (eventp->ffid)
+					{
 						printf(";L:%s:%d", eventp->name, eventp->ffid);
-					} else {
+					}
+					else
+					{
 						printf(";L:%s", eventp->name);
 					}
 				}
@@ -619,20 +622,36 @@ static void handle_nginx_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 
 static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 {
-	char *nginx_path = "/usr/local/openresty-debug/nginx/sbin/nginx";
-	char *lua_path = "/usr/local/openresty-debug/luajit/lib/libluajit-5.1.so.2.1.0";
+	char nginx_path[128];
+	char lua_path[128];
+	if (env.pid)
+	{
+		int res = 0;
+
+		res = get_pid_binary_path(env.pid, nginx_path, sizeof(nginx_path));
+		if (res < 0)
+		{
+			fprintf(stderr, "failed to get binary path for pid %d\n", env.pid);
+			return -1;
+		}
+		res = get_pid_lib_path(env.pid, "luajit-5.1.so", lua_path, sizeof(lua_path));
+		if (res < 0) {
+			fprintf(stderr, "failed to get lib path for pid %d\n", env.pid);
+			return -1;
+		}
+	}
 
 	off_t func_off = get_elf_func_offset(nginx_path, "ngx_http_lua_del_thread");
 	if (func_off < 0)
 	{
-		warn("could not find getaddrinfo in %s\n", nginx_path);
+		warn("could not find ngx_http_lua_del_thread in %s\n", nginx_path);
 		return -1;
 	}
 	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
 										  -1, nginx_path, func_off);
 	if (!links[0])
 	{
-		warn("failed to attach getaddrinfo: %d\n", -errno);
+		warn("failed to attach ngx_http_lua_del_thread: %d\n", -errno);
 		return -1;
 	}
 
@@ -653,28 +672,28 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 	func_off = get_elf_func_offset(lua_path, "lua_pcall");
 	if (func_off < 0)
 	{
-		warn("could not find lua_resume in %s\n", lua_path);
+		warn("could not find lua_pcall in %s\n", lua_path);
 		return -1;
 	}
 	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
 										  -1, lua_path, func_off);
 	if (!links[0])
 	{
-		warn("failed to attach lua_resume: %d\n", -errno);
+		warn("failed to attach lua_pcall: %d\n", -errno);
 		return -1;
 	}
 
 	func_off = get_elf_func_offset(lua_path, "lua_yield");
 	if (func_off < 0)
 	{
-		warn("could not find lua_resume in %s\n", lua_path);
+		warn("could not find lua_yield in %s\n", lua_path);
 		return -1;
 	}
 	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
 										  -1, lua_path, func_off);
 	if (!links[0])
 	{
-		warn("failed to attach lua_resume: %d\n", -errno);
+		warn("failed to attach lua_yield: %d\n", -errno);
 		return -1;
 	}
 	return 0;

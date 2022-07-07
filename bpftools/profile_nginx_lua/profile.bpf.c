@@ -36,7 +36,7 @@ struct
 	__type(value, struct lua_stack_event);
 } lua_events SEC(".maps");
 
-// output the lua stack to user space because we cannot keep all of them in 
+// output the lua stack to user space because we cannot keep all of them in
 // ebpf maps
 struct
 {
@@ -204,7 +204,8 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	if (valp)
 		__sync_fetch_and_add(valp, 1);
 
-	if (!valp || *valp <= 1){
+	if (!valp || *valp <= 1)
+	{
 		// only get lua stack the first time
 		fix_lua_stack(ctx, tid, key.user_stack_id);
 	}

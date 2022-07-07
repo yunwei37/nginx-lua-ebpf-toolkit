@@ -4,6 +4,7 @@ bootstrap
 profile
 a.bt
 a.cbt
+a.svg
 perf.data*
 trace_helpers.o
 lua_stacks_helper.o
