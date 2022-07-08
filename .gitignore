@@ -1,3 +1,4 @@
 openresty-1.21.4.1
 openresty-1.21.4.1.tar.gz
 .vscode
+tools/FlameGraph

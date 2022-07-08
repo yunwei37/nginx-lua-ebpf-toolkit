@@ -2,7 +2,8 @@
 
 Use ebpf to generate lua flamegraphs:
 
-- trace lua stack in kernel space without modify any code
+- trace lua stack in kernel
+- zero code changes or restarts needed
 - support `luajit 32/luajit 64`
 - working well on new kernel(>=5.13)
 - faster speed
