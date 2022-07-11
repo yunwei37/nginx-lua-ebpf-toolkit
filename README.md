@@ -123,7 +123,7 @@ static inline int lua_get_funcdata(struct bpf_perf_event_data *ctx, cTValue *fra
 
 in user space, it will use the `user_stack_id` to mix the lua stack with the original user and kernel stack:
 
-see `bpftools/profile_nginx_lua/profile.c: print_user_stack_with_lua`
+see `bpftools/profile_nginx_lua/profile.c: print_fold_user_stack_with_lua`
 ```
 				....
 				const struct lua_stack_event* eventp = &(lua_bt->stack[count]);

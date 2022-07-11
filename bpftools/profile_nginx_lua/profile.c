@@ -361,7 +361,7 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	return true;
 }
 
-static void print_user_stack_with_lua(const struct stack_backtrace *lua_bt, const struct syms *syms, unsigned long *uip, unsigned int nr_uip)
+static void print_fold_user_stack_with_lua(const struct stack_backtrace *lua_bt, const struct syms *syms, unsigned long *uip, unsigned int nr_uip)
 {
 	const struct sym *sym = NULL;
 	int count = lua_bt->level_size - 1;
@@ -514,7 +514,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					printf(";[Missed User Stack]");
 				if (syms)
 				{
-					print_user_stack_with_lua(&lua_bt, syms, uip, nr_uip);
+					print_fold_user_stack_with_lua(&lua_bt, syms, uip, nr_uip);
 				}
 			}
 			if (!env.user_stacks_only)
@@ -611,8 +611,6 @@ static void handle_lua_stack_event(void *ctx, int cpu, void *data, __u32 data_sz
 	err = insert_lua_stack_map(lua_bt_map, e);
 	if (err)
 		fprintf(stderr, "failed to insert lua stack map\n");
-	// printf("%-8s %-7d %-7d %-7d %s\n",
-	// 	   ts, e->pid, e->level, e->user_stack_id, e->name);
 }
 
 static void handle_lua_stack_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -628,7 +626,8 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 		int res = 0;
 
 		res = get_pid_lib_path(env.pid, "luajit-5.1.so", lua_path, sizeof(lua_path));
-		if (res < 0) {
+		if (res < 0)
+		{
 			fprintf(stderr, "failed to get lib path for pid %d\n", env.pid);
 			return -1;
 		}
