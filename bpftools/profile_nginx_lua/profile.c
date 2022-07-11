@@ -61,6 +61,7 @@ static struct env
 };
 
 #define warn(...) fprintf(stderr, __VA_ARGS__)
+#define UPROBE_SIZE 3
 
 const char *argp_program_version = "profile 0.1";
 const char *argp_program_bug_address =
@@ -484,7 +485,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 			if (bpf_map_lookup_elem(sfd, &k->user_stack_id, uip) == 0)
 			{
 				/* count the number of ips */
-				while (uip[nr_uip] && nr_uip < env.perf_max_stack_depth)
+				while (nr_uip < env.perf_max_stack_depth && uip[nr_uip])
 					nr_uip++;
 				syms = syms_cache__get_syms(syms_cache, k->pid);
 			}
@@ -498,7 +499,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 			if (bpf_map_lookup_elem(sfd, &k->kern_stack_id, kip + nr_kip) == 0)
 			{
 				/* count the number of ips */
-				while (kip[nr_kip] && nr_kip < env.perf_max_stack_depth)
+				while (nr_kip < env.perf_max_stack_depth && kip[nr_kip])
 					nr_kip++;
 			}
 		}
@@ -653,9 +654,9 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 		warn("could not find lua_pcall in %s\n", lua_path);
 		return -1;
 	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
+	links[1] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua, false,
 										  -1, lua_path, func_off);
-	if (!links[0])
+	if (!links[1])
 	{
 		warn("failed to attach lua_pcall: %d\n", -errno);
 		return -1;
@@ -667,9 +668,9 @@ static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 		warn("could not find lua_yield in %s\n", lua_path);
 		return -1;
 	}
-	links[0] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
+	links[2] = bpf_program__attach_uprobe(obj->progs.handle_entry_lua_cancel, false,
 										  -1, lua_path, func_off);
-	if (!links[0])
+	if (!links[2])
 	{
 		warn("failed to attach lua_yield: %d\n", -errno);
 		return -1;
@@ -686,7 +687,8 @@ int main(int argc, char **argv)
 	};
 	struct syms_cache *syms_cache = NULL;
 	struct ksyms *ksyms = NULL;
-	struct bpf_link *links[MAX_CPU_NR] = {};
+	struct bpf_link *cpu_links[MAX_CPU_NR] = {};
+	struct bpf_link *uprobe_links[UPROBE_SIZE] = {};
 	struct profile_bpf *obj;
 	int err, i;
 	char *stack_context = "user + kernel";
@@ -756,7 +758,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	err = attach_uprobes(obj, links);
+	err = attach_uprobes(obj, uprobe_links);
 	if (err)
 		goto cleanup;
 
@@ -772,13 +774,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	// err = profile_bpf__attach(obj);
-	// if (err) {
-	// 	fprintf(stderr, "failed to attach BPF programs\n");
-	// 	goto cleanup;
-	// }
-
-	err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, links);
+	err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, cpu_links);
 	if (err)
 		goto cleanup;
 
@@ -831,13 +827,16 @@ int main(int argc, char **argv)
 
 cleanup:
 	if (env.cpu != -1)
-		bpf_link__destroy(links[env.cpu]);
+		bpf_link__destroy(cpu_links[env.cpu]);
 	else
 	{
 		for (i = 0; i < nr_cpus; i++)
-			bpf_link__destroy(links[i]);
+			bpf_link__destroy(cpu_links[i]);
 	}
+	for (i = 0; i < UPROBE_SIZE; i++)
+		bpf_link__destroy(uprobe_links[i]);
 	profile_bpf__destroy(obj);
+	perf_buffer__free(pb);
 	syms_cache__free(syms_cache);
 	ksyms__free(ksyms);
 	return err != 0;
