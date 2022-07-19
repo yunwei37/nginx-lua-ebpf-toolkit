@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /* Copyright (c) 2022 LG Electronics */
-#include "lua_debug.h"
+#include "lua_state.h"
 #include "profile.h"
 #include "maps.bpf.h"
 
 const volatile bool kernel_stacks_only = false;
 const volatile bool user_stacks_only = false;
+const volatile bool disable_lua_user_trace = false;
 const volatile bool include_idle = false;
 const volatile pid_t targ_pid = -1;
 const volatile pid_t targ_tid = -1;
@@ -125,8 +126,8 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
 	/* Traverse frames backwards. */
-	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 12
-	for (; i < 12 && frame > bot; i++)
+	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 13
+	for (; i < 15 && frame > bot; i++)
 	{
 		if (frame_gc(frame) == obj2gco(L))
 		{
@@ -204,9 +205,9 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	if (valp)
 		__sync_fetch_and_add(valp, 1);
 
-	if (!valp || *valp <= 1)
+	if (!disable_lua_user_trace && (!valp || *valp <= 1))
 	{
-		// only get lua stack the first time
+		// only get lua stack the first time we found a new stack id
 		fix_lua_stack(ctx, tid, key.user_stack_id);
 	}
 	return 0;

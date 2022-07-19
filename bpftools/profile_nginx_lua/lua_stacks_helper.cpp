@@ -45,6 +45,7 @@ int insert_lua_stack_map(struct lua_stack_map *map, const struct lua_stack_event
     return 0;
 }
 
+// return the level of stack in the map
 int get_lua_stack_backtrace(struct lua_stack_map *map, int user_stack_id, struct stack_backtrace *stack)
 {
     auto it = map->map.find(user_stack_id);
@@ -54,5 +55,5 @@ int get_lua_stack_backtrace(struct lua_stack_map *map, int user_stack_id, struct
         return -1;
     }
     *stack = it->second;
-    return 0;
+    return stack? stack->level_size:0;
 }

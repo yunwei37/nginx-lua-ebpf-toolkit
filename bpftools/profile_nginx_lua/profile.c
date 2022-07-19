@@ -4,7 +4,8 @@
  * Copyright (c) 2022 LG Electronics
  *
  * Based on profile(8) from BCC by Brendan Gregg.
- * 28-Dec-2021   Eunseon Lee   Created this.
+ * 28-Dec-2021 Eunseon Lee Created this,
+ * 17-Jul-2022 Yusheng Zheng modified this.
  */
 #include <argp.h>
 #include <signal.h>
@@ -39,6 +40,9 @@ static struct env
 	pid_t tid;
 	bool user_stacks_only;
 	bool kernel_stacks_only;
+	// control lua user space stack trace
+	bool disable_lua_user_trace;
+	bool lua_user_stacks_only;
 	int stack_storage_size;
 	int perf_max_stack_depth;
 	int duration;
@@ -83,6 +87,8 @@ const char argp_program_doc[] =
 
 #define OPT_PERF_MAX_STACK_DEPTH 1 /* --perf-max-stack-depth */
 #define OPT_STACK_STORAGE_SIZE 2   /* --stack-storage-size */
+#define OPT_LUA_USER_STACK_ONLY 3  /* --lua-user-stacks-only */
+#define OPT_DISABLE_LUA_USER_TRACE 4  /* --disable-lua-user-trace */
 #define PERF_BUFFER_PAGES 16
 #define PERF_POLL_TIMEOUT_MS 100
 
@@ -93,6 +99,10 @@ static const struct argp_option opts[] = {
 	 "show stacks from user space only (no kernel space stacks)"},
 	{"kernel-stacks-only", 'K', NULL, 0,
 	 "show stacks from kernel space only (no user space stacks)"},
+	{"lua-user-stacks-only", OPT_LUA_USER_STACK_ONLY, NULL, 0,
+	 "replace user stacks with lua stack traces (no other user space stacks)"},
+	{"disable-lua-user-trace", OPT_DISABLE_LUA_USER_TRACE, NULL, 0,
+	 "disable lua user space stack trace"},
 	{"frequency", 'F', "FREQUENCY", 0, "sample frequency, Hertz"},
 	{"delimited", 'd', NULL, 0, "insert delimiter between kernel/user stacks"},
 	{"include-idle ", 'I', NULL, 0, "include CPU idle stacks"},
@@ -187,6 +197,12 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			fprintf(stderr, "invalid stack storage size: %s\n", arg);
 			argp_usage(state);
 		}
+		break;
+	case OPT_LUA_USER_STACK_ONLY:
+		env.lua_user_stacks_only = true;
+		break;
+	case OPT_DISABLE_LUA_USER_TRACE:
+		env.disable_lua_user_trace = true;
 		break;
 	case ARGP_KEY_ARG:
 		if (pos_args++)
@@ -362,56 +378,68 @@ static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	return true;
 }
 
+static void print_fold_lua_func(const struct syms *syms, const struct lua_stack_event *eventp)
+{
+	if (!eventp)
+	{
+		return;
+	}
+	if (eventp->type == FUNC_TYPE_LUA)
+	{
+		if (eventp->ffid)
+		{
+			printf(";L:%s:%d", eventp->name, eventp->ffid);
+		}
+		else
+		{
+			printf(";L:%s", eventp->name);
+		}
+	}
+	else if (eventp->type == FUNC_TYPE_C)
+	{
+		const struct sym *sym = syms__map_addr(syms, (unsigned long)eventp->funcp);
+		if (sym)
+		{
+			printf(";C:%s", sym ? sym->name : "[unknown]");
+		}
+	}
+	else if (eventp->type == FUNC_TYPE_F)
+	{
+		printf(";builtin#%d", eventp->ffid);
+	}
+	else
+	{
+		printf(";[unknown]");
+	}
+}
+
 static void print_fold_user_stack_with_lua(const struct stack_backtrace *lua_bt, const struct syms *syms, unsigned long *uip, unsigned int nr_uip)
 {
 	const struct sym *sym = NULL;
-	int count = lua_bt->level_size - 1;
+	int lua_bt_count = lua_bt->level_size - 1;
 	for (int j = nr_uip - 1; j >= 0; j--)
 	{
 		sym = syms__map_addr(syms, uip[j]);
 		if (sym)
 		{
-			printf(";%s", sym ? sym->name : "[unknown]");
+			if (!env.lua_user_stacks_only)
+			{
+				printf(";%s", sym->name);
+			}
 		}
 		else
 		{
-			if (count >= 0)
+			if (lua_bt_count >= 0)
 			{
-				const struct lua_stack_event *eventp = &(lua_bt->stack[count]);
-				if (eventp->type == FUNC_TYPE_LUA)
-				{
-					if (eventp->ffid)
-					{
-						printf(";L:%s:%d", eventp->name, eventp->ffid);
-					}
-					else
-					{
-						printf(";L:%s", eventp->name);
-					}
-				}
-				else if (eventp->type == FUNC_TYPE_C)
-				{
-					sym = syms__map_addr(syms, (unsigned long)eventp->funcp);
-					if (sym)
-					{
-						printf(";C:%s", sym ? sym->name : "[unknown]");
-					}
-				}
-				else if (eventp->type == FUNC_TYPE_F)
-				{
-					printf(";builtin#%d", eventp->ffid);
-				}
-				else
-				{
-					// printf(";[unknown]");
-				}
-				count--;
-			}
-			else if (lua_bt->level_size == 0)
-			{
-				// printf(";[unknown]");
+				print_fold_lua_func(syms, &(lua_bt->stack[lua_bt_count]));
+				lua_bt_count--;
 			}
 		}
+	}
+	while (lua_bt_count >= 0)
+	{
+		print_fold_lua_func(syms, &(lua_bt->stack[lua_bt_count]));
+		lua_bt_count--;
 	}
 }
 
@@ -489,7 +517,13 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					nr_uip++;
 				syms = syms_cache__get_syms(syms_cache, k->pid);
 			}
-			get_lua_stack_backtrace(lua_bt_map, k->user_stack_id, &lua_bt);
+			int stack_level = get_lua_stack_backtrace(lua_bt_map, k->user_stack_id, &lua_bt);
+			if (env.lua_user_stacks_only && env.folded) {
+				if (stack_level <= 0) {
+					// if show lua user stack only, then we do not count the stack if it is not lua stack
+					continue;
+				}
+			}
 		}
 
 		if (!env.user_stacks_only && k->kern_stack_id >= 0)
@@ -515,7 +549,19 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 					printf(";[Missed User Stack]");
 				if (syms)
 				{
-					print_fold_user_stack_with_lua(&lua_bt, syms, uip, nr_uip);
+					if (!env.disable_lua_user_trace)
+					{
+						print_fold_user_stack_with_lua(&lua_bt, syms, uip, nr_uip);
+					}
+					else
+					{
+						const struct sym *sym = NULL;
+						for (int j = nr_uip - 1; j >= 0; j--)
+						{
+							sym = syms__map_addr(syms, uip[j]);
+							printf(";%s", sym ? sym->name : "[unknown]");
+						}
+					}
 				}
 			}
 			if (!env.user_stacks_only)
@@ -619,7 +665,7 @@ static void handle_lua_stack_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 	warn("lost %llu events on CPU #%d\n", lost_cnt, cpu);
 }
 
-static int attach_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
+static int attach_lua_uprobes(struct profile_bpf *obj, struct bpf_link *links[])
 {
 	char lua_path[128];
 	if (env.pid)
@@ -758,9 +804,12 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	err = attach_uprobes(obj, uprobe_links);
-	if (err)
-		goto cleanup;
+	err = attach_lua_uprobes(obj, uprobe_links);
+	if (err < 0)
+	{
+		// cannot found lua lib, so skip lua uprobe
+		env.disable_lua_user_trace = true;
+	}
 
 	lua_bt_map = init_lua_stack_map();
 	if (!lua_bt_map)
