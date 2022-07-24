@@ -7,9 +7,13 @@ Use ebpf to generate lua flamegraphs:
 - support `luajit 32/luajit 64`
 - working well on new kernel(>=5.13)
 - faster speed
-- run only small binary without any dependencies
+- run only a small binary without any dependencies
 
-## probe nginx lua
+> Note: 
+> - for the ebpf verifier instructions limit in kernel, the stack-trace deepth is limited to top 15 in lua. If you need to trace deeper, you need to use systemtap instead.
+> - this project is not finished yet, and some errors may occurred.
+
+## probe lua stack in nginx
 
 see: bpftools/profile_nginx_lua/profile.bpf.c
 
@@ -47,8 +51,8 @@ see the `fix_lua_stack` function:
 	int i = 0;
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
 	/* Traverse frames backwards. */
-	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 12
-	for (; i < 12 && frame > bot; i++)
+	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 15
+	for (; i < 15 && frame > bot; i++)
 	{
 		if (frame_gc(frame) == obj2gco(L))
 		{
@@ -152,6 +156,16 @@ see `bpftools/profile_nginx_lua/profile.c: print_fold_user_stack_with_lua`
 
 If the lua stack output `user_stack_id` matches the original `user_stack_id`, this means the stack is a lua stack. Then, we replace the `[unknown]` function whose uip insides the luajit vm function range with our lua stack. This may not be totally correct, but it works for now. After printing the stack, we can use 
 
+## results flamegraph
+
+lua:
+
+![flamegraph](bpftools/profile_nginx_lua/results/user-lua.svg)
+
+lua and c:
+
+![flamegraph](bpftools/profile_nginx_lua/results/user-lua-c.svg)
+
 ### reference
 
 for reference, I looked into the debug functions of lua vm:
@@ -179,20 +193,26 @@ and:
 - https://github.com/api7/stapxx/blob/master/tapset/luajit_gc64.sxx
 - https://github.com/openresty/openresty-systemtap-toolkit/blob/master/ngx-sample-lua-bt
 
+The ebpf program is from: https://github.com/iovisor/bcc/pull/3782
+
 ### to run lua profile:
 
-for example:
+tested with `luajit-5.1.so`
+
+for example, use apisix profile scripts in CI to start `APISIX`(ci/performance_test.sh):
 
 ```bash
 # get nginx pid
 pgrep -P $(cat logs/nginx.pid) -n -f worker
 # sample only user stack and lua stack, use fold output, trace pid 36685 for nginx
-sudo ./profile -f -F 499 -U -p 366865 > a.bt
-# get flamegraph
-cat a.bt | ../../FlameGraph/flamegraph.pl > a.svg
+cd bpftools/profile_nginx_lua
+make
+sudo ./profile -f -F 499 -U -p [pid] --lua-user-stacks-only > a.bt
+# get flame graph
+cat a.bt | ../../tools/FlameGraph/flamegraph.pl > a.svg
 ```
 
-## run nginx probe
+## run nginx uprobe example
 
 sudo /usr/bin/python /home/yunwei/coding/ebpf/nginx_uprobe.py
 
@@ -236,15 +256,8 @@ sudo ./ci/performance_test.sh install_stap_tools
 - 支持获取在Docker中运行的 `Apache APISIX` 进程
 - 支持获取 Apache APISIX Openresty luajit 32/luajit 64 模式
 
-### 项目完成进度
+TODO:
 
-
-- [X] 获取 docker 中运行的 APISIX 和 Openresty / nginx 进程 PID `2022/05`
-- [X] 利用 ebpf/BCC 生成火焰图 `2022/05`
-- [X] 利用 libbpf 生成 Openresty/nginx/lua 火焰图 `2022/06/04`
-- [X] 在 libbpf 中利用 uprobe 获取 lua status 堆栈信息 `2022/06/08`
-- [X] 在 profile 的同时获取 lua status stack trace 信息 `2022/06/23`
-- [X] 把得到的函数信息在最后生成火焰图的时候和原先的 c 函数信息综合起来 `2022/06/23`
-- [X] 整理工具
-- [ ] more with other tools
-
+- [ ] test in docker
+- [ ] test for more version of luajit32/64
+- [ ] add more functionalities
