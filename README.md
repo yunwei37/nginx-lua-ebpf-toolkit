@@ -197,7 +197,7 @@ The ebpf program is from: https://github.com/iovisor/bcc/pull/3782
 
 ### to run lua profile:
 
-tested with `luajit-5.1.so`
+tested with `luajit-5.1.so` gc64:
 
 for example, use apisix profile scripts in CI to start `APISIX`(ci/performance_test.sh):
 
@@ -211,10 +211,6 @@ sudo ./profile -f -F 499 -U -p [pid] --lua-user-stacks-only > a.bt
 # get flame graph
 cat a.bt | ../../tools/FlameGraph/flamegraph.pl > a.svg
 ```
-
-## run nginx uprobe example
-
-sudo /usr/bin/python /home/yunwei/coding/ebpf/nginx_uprobe.py
 
 ## test when running benchmark
 
@@ -246,6 +242,17 @@ sudo ./ci/performance_test.sh install_wrk2
 sudo ./ci/performance_test.sh install_stap_tools
 ./ci/performance_test.sh run_performance_test
 ```
+
+## test with containers or missing debug info
+
+This tool can get the APISIX process within a container, and get some stack trace ip. 
+However, If the debug info is not shipped with the docker, the tool cannot use the uprobe
+to trace the lua stack, and the c stack also cannot get any valid output. Solutions may be:
+
+- get some debug info for the APISIX program in docker, then it can work with both c and lua tracing.
+  If the program cannot find the debug info correctly, we may need to specify it mannually.
+- Compile luajit with some user-space tracepoints (see: https://lwn.net/Articles/753601/), then we 
+  can use this for uprobe to trace lua stacks, but c stacks still cannot work.
 
 ## for APISIX OSPP
 
