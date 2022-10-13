@@ -7,7 +7,7 @@
 #define MAX_ENTRIES 10240
 #define HOST_LEN 80
 
-struct key_t
+struct profile_key_t
 {
 	unsigned int pid;
 	unsigned long long kernel_ip;

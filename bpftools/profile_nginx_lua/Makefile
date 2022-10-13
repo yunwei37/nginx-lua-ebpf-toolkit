@@ -12,7 +12,8 @@ VMLINUX := ../../vmlinux/$(ARCH)/vmlinux.h
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
 INCLUDES := -I$(OUTPUT) -I../../libbpf/include/uapi -I$(dir $(VMLINUX))
-CFLAGS := -g -Wall -fsanitize=address
+CFLAGS := -g -Wall # -fsanitize=address
+CXX := clang++
 
 APPS = profile
 
@@ -84,7 +85,7 @@ uprobe_helpers.o: uprobe_helpers.c uprobe_helpers.h
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
 lua_stacks_helper.o: lua_stacks_helper.cpp profile.h lua_stacks_helper.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.cpp,$^) -o $@
+	$(CXX) $(CFLAGS) $(INCLUDES) -c $(filter %.cpp,$^) -o $@
 
 # Build application binary
 $(APPS): %: $(OUTPUT)/%.o uprobe_helpers.o trace_helpers.o lua_stacks_helper.o $(LIBBPF_OBJ) | $(OUTPUT)
