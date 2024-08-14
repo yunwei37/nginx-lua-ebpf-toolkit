@@ -13,6 +13,12 @@ Use ebpf to generate lua flamegraphs:
 > - for the ebpf verifier instructions limit in kernel, the stack-trace deepth is limited to top 15 in lua. If you need to trace deeper, you need to use systemtap instead.
 > - this project is not finished yet, and some errors may occurred.
 
+The docker image can be found in:
+
+```sh
+docker pull ghcr.io/yunwei37/nginx-lua-profile:latest
+```
+
 ## probe lua stack in nginx
 
 see: bpftools/profile_nginx_lua/profile.bpf.c
