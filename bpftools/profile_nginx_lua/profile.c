@@ -27,7 +27,7 @@
 /* This structure combines key_t and count which should be sorted together */
 struct key_ext_t
 {
-	struct key_t k;
+	struct profile_key_t k;
 	__u64 v;
 };
 
@@ -300,7 +300,7 @@ static bool read_batch_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	__u32 i, n, n_read = 0;
 	int err = 0;
 	__u32 vals[*count];
-	struct key_t keys[*count];
+	struct profile_key_t keys[*count];
 
 	while (n_read < *count && !err)
 	{
@@ -336,8 +336,8 @@ static bool read_batch_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 
 static bool read_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 {
-	struct key_t empty = {};
-	struct key_t *lookup_key = &empty;
+	struct profile_key_t empty = {};
+	struct profile_key_t *lookup_key = &empty;
 	int i = 0;
 	int err;
 
@@ -452,7 +452,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 	int i, j, cfd, sfd;
 	struct stack_backtrace lua_bt = {0};
 	__u32 nr_count;
-	struct key_t *k;
+	struct profile_key_t *k;
 	__u64 v;
 	unsigned long *kip;
 	unsigned long *uip;
