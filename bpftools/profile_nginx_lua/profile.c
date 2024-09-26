@@ -299,7 +299,7 @@ static bool read_batch_counts_map(int fd, struct key_ext_t *items, __u32 *count)
 	void *in = NULL, *out;
 	__u32 i, n, n_read = 0;
 	int err = 0;
-	__u32 vals[*count];
+	__u64 vals[*count];
 	struct profile_key_t keys[*count];
 
 	while (n_read < *count && !err)
