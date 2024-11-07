@@ -10,6 +10,9 @@ const volatile bool disable_lua_user_trace = false;
 const volatile bool include_idle = false;
 const volatile pid_t targ_pid = -1;
 const volatile pid_t targ_tid = -1;
+const volatile __u64 targ_ns_dev = 0;
+const volatile __u64 targ_ns_ino = 0;
+const volatile __u64 stack_depth_limit = 0;
 
 struct
 {
@@ -84,7 +87,7 @@ static inline int lua_get_funcdata(struct bpf_perf_event_data *ctx, cTValue *fra
 		if (!src)
 			return -1;
 		bpf_probe_read_user_str(eventp->name, sizeof(eventp->name), src);
-		bpf_printk("level= %d, fn_name=%s\n", level, eventp->name);
+		//bpf_printk("level= %d, fn_name=%s\n", level, eventp->name);
 	}
 	else if (iscfunc(fn))
 	{
@@ -127,7 +130,7 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	frame = nextframe = BPF_PROBE_READ_USER(L, base) - 1;
 	/* Traverse frames backwards. */
 	// for the ebpf verifier insns (limit 1000000), we need to limit the max loop times to 13
-	for (; i < 15 && frame > bot; i++)
+	for (; i < stack_depth_limit && frame > bot; i++)
 	{
 		if (frame_gc(frame) == obj2gco(L))
 		{
@@ -159,12 +162,33 @@ static int fix_lua_stack(struct bpf_perf_event_data *ctx, __u32 tid, int stack_i
 	return 0;
 }
 
+static long get_current_pid_tgid(__u32 *pid, __u32 *tid)
+{
+	if (targ_ns_dev == 0 && targ_ns_ino == 0)
+	{
+		__u64 id = bpf_get_current_pid_tgid();
+		*pid = id >> 32;
+		*tid = id;
+		return 0;
+	}
+
+	struct bpf_pidns_info ns = {};
+	long ret = bpf_get_ns_current_pid_tgid(targ_ns_dev, targ_ns_ino, &ns, sizeof(struct bpf_pidns_info));
+	if (ret)
+		return ret;
+
+	*pid = ns.pid;
+	*tid = ns.tgid;
+	return 0;
+}
+
 SEC("perf_event")
 int do_perf_event(struct bpf_perf_event_data *ctx)
 {
-	__u64 id = bpf_get_current_pid_tgid();
-	__u32 pid = id >> 32;
-	__u32 tid = id;
+	__u32 pid = 0, tid = 0;
+	if (get_current_pid_tgid(&pid, &tid))
+		return 0;
+
 	__u64 *valp;
 	static const __u64 zero;
 	struct profile_key_t key = {};
@@ -220,9 +244,9 @@ static int probe_entry_lua_cancel(struct pt_regs *ctx)
 	if (!PT_REGS_PARM4(ctx))
 		return 0;
 
-	__u64 pid_tgid = bpf_get_current_pid_tgid();
-	__u32 pid = pid_tgid >> 32;
-	__u32 tid = (__u32)pid_tgid;
+	__u32 pid = 0, tid = 0;
+	if (get_current_pid_tgid(&pid, &tid))
+		return 0;
 
 	if (targ_pid != -1 && targ_pid != pid)
 		return 0;
@@ -241,9 +265,10 @@ static int probe_entry_lua(struct pt_regs *ctx)
 	if (!PT_REGS_PARM1(ctx))
 		return 0;
 
-	__u64 pid_tgid = bpf_get_current_pid_tgid();
-	__u32 pid = pid_tgid >> 32;
-	__u32 tid = (__u32)pid_tgid;
+	__u32 pid = 0, tid = 0;
+	if (get_current_pid_tgid(&pid, &tid))
+		return 0;
+
 	struct lua_stack_event event = {};
 
 	if (targ_pid != -1 && targ_pid != pid)

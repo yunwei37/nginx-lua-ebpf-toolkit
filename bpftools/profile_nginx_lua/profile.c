@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <linux/perf_event.h>
+#include <sys/stat.h>
 #include <asm/unistd.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -38,12 +39,15 @@ static struct env
 {
 	pid_t pid;
 	pid_t tid;
+	__u64 ns_dev;
+	__u64 ns_ino;
 	bool user_stacks_only;
 	bool kernel_stacks_only;
 	// control lua user space stack trace
 	bool disable_lua_user_trace;
 	bool lua_user_stacks_only;
 	int stack_storage_size;
+	int stack_depth_limit;
 	int perf_max_stack_depth;
 	int duration;
 	bool verbose;
@@ -56,7 +60,10 @@ static struct env
 } env = {
 	.pid = -1,
 	.tid = -1,
+	.ns_dev = 0,
+	.ns_ino = 0,
 	.stack_storage_size = 8192,
+	.stack_depth_limit = 15,
 	.perf_max_stack_depth = 127,
 	.duration = 3,
 	.freq = 1,
@@ -87,8 +94,9 @@ const char argp_program_doc[] =
 
 #define OPT_PERF_MAX_STACK_DEPTH 1 /* --perf-max-stack-depth */
 #define OPT_STACK_STORAGE_SIZE 2   /* --stack-storage-size */
-#define OPT_LUA_USER_STACK_ONLY 3  /* --lua-user-stacks-only */
-#define OPT_DISABLE_LUA_USER_TRACE 4  /* --disable-lua-user-trace */
+#define OPT_STACK_DEPTH_LIMIT 3    /* --stack-depth-limit */
+#define OPT_LUA_USER_STACK_ONLY 4  /* --lua-user-stacks-only */
+#define OPT_DISABLE_LUA_USER_TRACE 5  /* --disable-lua-user-trace */
 #define PERF_BUFFER_PAGES 16
 #define PERF_POLL_TIMEOUT_MS 100
 
@@ -109,6 +117,8 @@ static const struct argp_option opts[] = {
 	{"folded", 'f', NULL, 0, "output folded format, one line per stack (for flame graphs)"},
 	{"stack-storage-size", OPT_STACK_STORAGE_SIZE, "STACK-STORAGE-SIZE", 0,
 	 "the number of unique stack traces that can be stored and displayed (default 1024)"},
+	{"stack-depth-limit", OPT_STACK_DEPTH_LIMIT, "OPT_STACK_DEPTH_LIMIT", 0,
+	 "the limit depth of stack that be traversed (default 15)"},
 	{"cpu", 'C', "CPU", 0, "cpu number to run profile on"},
 	{"perf-max-stack-depth", OPT_PERF_MAX_STACK_DEPTH,
 	 "PERF-MAX-STACK-DEPTH", 0, "the limit for both kernel and user stack traces (default 127)"},
@@ -116,6 +126,22 @@ static const struct argp_option opts[] = {
 	{NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help"},
 	{},
 };
+
+static int read_ns_dev_ino(	__u64 *ns_dev, __u64 *ns_ino)
+{
+	struct stat statbuf;
+    const char *path = "/proc/self/ns/pid";
+
+    if (stat(path, &statbuf) == -1) {
+        perror("stat");
+        return 1;
+    }
+
+	*ns_dev = statbuf.st_dev;
+	*ns_ino = statbuf.st_ino;
+
+	return 0;
+}
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -195,6 +221,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		if (errno)
 		{
 			fprintf(stderr, "invalid stack storage size: %s\n", arg);
+			argp_usage(state);
+		}
+		break;
+	case OPT_STACK_DEPTH_LIMIT:
+		errno = 0;
+		env.stack_depth_limit = strtol(arg, NULL, 10);
+		if (errno)
+		{
+			fprintf(stderr, "invalid stack depth limit: %s\n", arg);
 			argp_usage(state);
 		}
 		break;
@@ -774,9 +809,18 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if(read_ns_dev_ino(&env.ns_dev, &env.ns_ino))
+	{
+		fprintf(stderr, "failed to read ns_dev and ns_ino\n");
+		return 1;
+	}
+
 	/* initialize global data (filtering options) */
 	obj->rodata->targ_pid = env.pid;
 	obj->rodata->targ_tid = env.tid;
+	obj->rodata->targ_ns_dev = env.ns_dev;
+	obj->rodata->targ_ns_ino = env.ns_ino;
+	obj->rodata->stack_depth_limit = env.stack_depth_limit;
 	obj->rodata->user_stacks_only = env.user_stacks_only;
 	obj->rodata->kernel_stacks_only = env.kernel_stacks_only;
 	obj->rodata->include_idle = env.include_idle;
@@ -788,7 +832,9 @@ int main(int argc, char **argv)
 	err = profile_bpf__load(obj);
 	if (err)
 	{
-		fprintf(stderr, "failed to load BPF programs\n");
+		fprintf(stderr, "failed to load BPF programs. "
+						"if the error message indicates `BPF program is too large`, "
+						"consider using the `--stack-depth-limit` option.\n");
 		goto cleanup;
 	}
 	ksyms = ksyms__load();
